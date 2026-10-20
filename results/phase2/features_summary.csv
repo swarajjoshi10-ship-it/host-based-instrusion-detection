@@ -1,0 +1,3 @@
+feature_set,dimension,train_windows,calib_windows,test_windows,zero_sparsity_pct,extract_time_s
+Baseline (Histogram + Bigrams),407,29605,172010,64665,96.67,6.087
+Richer (Histogram + Bigrams + Trigrams),663,29605,172010,64665,96.49,8.706
