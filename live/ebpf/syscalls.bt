@@ -1,0 +1,46 @@
+/*
+ * Kernel-side system call capture for the HIDS live monitor (bpftrace, Linux >= 4.9).
+ *
+ *   $1 = root pid to follow together with every task it creates (0 = trace every task on the host)
+ *   $2 = pid of the monitor itself, ignored in whole-host mode so it does not trace its own reads of this output
+ *
+ * Output, one line per event (parsed by live/capture.py):
+ *   S <tgid> <tid> <x86_64 syscall nr> <comm>     a task entered a system call
+ *   X <tid>                                         a task exited
+ *
+ * Tasks are tracked by kernel pid (= thread id). The fork tracepoint fires for every new task, processes and threads
+ * alike, so the set of followed tasks grows inside the kernel and nothing is missed between fork() and the first
+ * user-space look at the child.
+ */
+
+BEGIN
+{
+	if ($1 != 0) {
+		@track[$1] = 1;
+	}
+	printf("READY\n");
+}
+
+tracepoint:sched:sched_process_fork
+/@track[args->parent_pid]/
+{
+	@track[args->child_pid] = 1;
+}
+
+tracepoint:raw_syscalls:sys_enter
+/($1 == 0 && pid != $2 && comm != "bpftrace") || @track[tid]/
+{
+	printf("S %d %d %d %s\n", pid, tid, args->id, comm);
+}
+
+tracepoint:sched:sched_process_exit
+/$1 == 0 || @track[tid]/
+{
+	printf("X %d\n", tid);
+	delete(@track[tid]);
+}
+
+END
+{
+	clear(@track);
+}

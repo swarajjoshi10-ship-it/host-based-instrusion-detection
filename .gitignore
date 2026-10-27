@@ -4,6 +4,6 @@ __pycache__/
 LID-DS/
 *.pkl
 # live monitor outputs
-live/models/*.pt
+live/models/
 live/recordings/
 live/logs/
