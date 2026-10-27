@@ -1,37 +1,31 @@
 /*
- * Kernel-side system call capture for the HIDS live monitor (bpftrace, Linux >= 4.9).
+ * Kernel-side system call capture for the HIDS live monitor (bpftrace >= 0.9, Linux >= 4.18, cgroup v2).
  *
- *   $1 = root pid to follow together with every task it creates (0 = trace every task on the host)
- *   $2 = pid of the monitor itself, ignored in whole-host mode so it does not trace its own reads of this output
+ *   $1 = id of the cgroup to follow (0 = trace every task on the host)
+ *   $2 = id of a cgroup to ignore in whole-host mode (the monitor's own, so it does not trace itself)
  *
  * Output, one line per event (parsed by live/capture.py):
  *   S <tgid> <tid> <x86_64 syscall nr> <comm>     a task entered a system call
  *   X <tid>                                         a task exited
  * bpftrace itself prints "Attaching N probes..." once the probes are in place; the monitor waits for that line.
  *
- * Tasks are tracked by kernel pid (= thread id). The fork tracepoint fires for every new task, processes and threads
- * alike, so the set of followed tasks grows inside the kernel and nothing is missed between fork() and the first
- * user-space look at the child.
+ * Why cgroups and not pids: the monitor puts the watched program in its own cgroup before it starts. Every task it
+ * creates (processes and threads) inherits the cgroup inside the kernel, so the whole tree is followed with no
+ * fork tracking. A cgroup id (the kernfs inode number) is the same in every pid namespace, whereas the pid and tid
+ * seen here are kernel-global and differ from the pids user space sees inside a container or a WSL2 distro.
  *
  * No BEGIN/END blocks: they are uprobes on bpftrace's own binary, and the stripped bpftrace 0.14 in Ubuntu 22.04
- * cannot resolve them ("Could not resolve symbol: /proc/self/exe:BEGIN_trigger"). The root pid is matched directly.
+ * cannot resolve them ("Could not resolve symbol: /proc/self/exe:BEGIN_trigger").
  */
 
-tracepoint:sched:sched_process_fork
-/args->parent_pid == $1 || @track[args->parent_pid]/
-{
-	@track[args->child_pid] = 1;
-}
-
 tracepoint:raw_syscalls:sys_enter
-/($1 == 0 && pid != $2 && comm != "bpftrace") || tid == $1 || @track[tid]/
+/($1 != 0 && cgroup == $1) || ($1 == 0 && cgroup != $2)/
 {
 	printf("S %d %d %d %s\n", pid, tid, args->id, comm);
 }
 
 tracepoint:sched:sched_process_exit
-/$1 == 0 || tid == $1 || @track[tid]/
+/($1 != 0 && cgroup == $1) || ($1 == 0 && cgroup != $2)/
 {
 	printf("X %d\n", tid);
-	delete(@track[tid]);
 }

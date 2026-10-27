@@ -15,6 +15,8 @@ Writes live/results/overhead.csv and prints a table (median of --repeats runs, s
 import argparse, csv, os, re, shlex, shutil, statistics, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__)); LIVE = os.path.dirname(HERE); ROOT = os.path.dirname(LIVE)
+sys.path.insert(0, LIVE)
+import capture
 ap = argparse.ArgumentParser()
 ap.add_argument("--model", default=os.path.join(LIVE, "models", "host.npz"))
 ap.add_argument("--repeats", type=int, default=5); ap.add_argument("--ebpf", action="store_true")
@@ -56,20 +58,18 @@ def timed(workload, stamp):
 def run_once(cond, workload):
     stamp = os.path.join(tmp, "stamp"); cmd = timed(workload, stamp); info = {}
     if cond == "ebpf":
-        # gate the workload so bpftrace follows its pid from the first call
-        r, w = os.pipe()
-        child = subprocess.Popen(["sh", "-c", f'read _ <&{r}; exec {r}<&-; exec "$@"', "sh", *cmd],
-                                 pass_fds=(r,), stdout=subprocess.DEVNULL)
-        os.close(r)
+        # the workload waits at a gate inside its own cgroup until bpftrace (filtering on that cgroup) is attached
+        child, release = capture._gated(cmd)
+        cg = capture.Cgroup(f"hids-bench-{os.getpid()}-{time.monotonic_ns() % 10 ** 6}"); cg.add(child.pid)
         out = os.path.join(tmp, "bt.out")                    # a file, so a slow reader can never block bpftrace
         with open(out, "w") as fh:
-            tr = subprocess.Popen(["bpftrace", "-B", "full", BT, str(child.pid), str(os.getpid())], stdout=fh)
+            tr = subprocess.Popen(["bpftrace", "-B", "full", BT, str(cg.id), "0"], stdout=fh)
         while "Attaching" not in open(out).read():
             if tr.poll() is not None:
-                child.kill(); sys.exit(f"bpftrace failed to start (exit code {tr.returncode}); see its error above")
+                child.kill(); child.wait(); cg.remove(); sys.exit(f"bpftrace failed to start (exit code {tr.returncode}); see its error above")
             time.sleep(0.05)
-        time.sleep(0.2); os.write(w, b"go\n"); os.close(w)
-        child.wait(); tr.terminate(); tr.wait()
+        time.sleep(0.2); release()
+        child.wait(); time.sleep(0.3); tr.terminate(); tr.wait(); cg.remove()
         lines = open(out).read().splitlines()
         info["syscalls"] = sum(l.startswith("S ") for l in lines)
         info["lost"] = sum(int(l.split()[1]) for l in lines if l.startswith("Lost "))

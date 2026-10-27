@@ -9,12 +9,12 @@ Live system call capture. Every source yields the same events:
 
 Backends
   ebpf    bpftrace program attached to the raw_syscalls:sys_enter tracepoint (in-kernel, needs root).
-          Follows a process tree (forks are tracked inside the kernel) or the whole host.
+          Follows a process tree placed in its own cgroup (children inherit it in the kernel), or the whole host.
   strace  ptrace(2): the kernel stops the traced task on every system call and wakes strace. Works without root for a
           command it starts itself. Much slower, because every call costs two extra context switches.
   replay  re-reads a saved strace (-f) or bpftrace output file; used for tests.
 """
-import os, re, shutil, subprocess, tempfile, time
+import os, re, shutil, subprocess, tempfile, threading, time
 from syscalls import name_to_x64
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -99,34 +99,108 @@ def _gated(cmd):
         os.write(w, b"go\n"); os.close(w)
     return p, release
 
-def ebpf_source(cmd=None, pid=0):
-    """Stream events from the bpftrace program. cmd: start and follow this command; pid: follow an existing process
-    tree; neither: whole host."""
-    bt = shutil.which("bpftrace")
-    if not bt: raise SystemExit("bpftrace not found: sudo apt install bpftrace")
-    if os.geteuid() != 0: raise SystemExit("the eBPF backend must run as root (sudo -E python3 live/monitor.py ...)")
-    child, release = (None, None)
-    if cmd: child, release = _gated(cmd); pid = child.pid
-    tracer = subprocess.Popen([bt, "-B", "line", BT_SCRIPT, str(pid), str(os.getpid())], stdout=subprocess.PIPE, text=True, errors="replace")
-    ready = False
-    try:
-        for line in tracer.stdout:
+class Cgroup:
+    """A cgroup v2 directory used as a container for the watched process tree."""
+    ROOT = "/sys/fs/cgroup"
+
+    def __init__(self, name):
+        self.path = os.path.join(self.ROOT, name)
+        os.mkdir(self.path)
+        self.id = os.stat(self.path).st_ino                  # = the id bpftrace's `cgroup` builtin returns
+
+    def _write(self, f, v):
+        with open(os.path.join(self.path, f), "w") as fh: fh.write(f"{v}\n")
+
+    def add(self, pid): self._write("cgroup.procs", pid)   # moves the whole process (all its threads)
+    def pids(self): return [int(x) for x in open(os.path.join(self.path, "cgroup.procs")).read().split()]
+    def frozen(self): return "frozen 1" in open(os.path.join(self.path, "cgroup.events")).read()
+    def freeze(self): self._write("cgroup.freeze", 1)      # every task stops, like SIGSTOP but uncatchable as a group
+    def kill(self): self._write("cgroup.kill", 1)          # SIGKILL to every task in the cgroup (Linux >= 5.14)
+    def remove(self):
+        try: os.rmdir(self.path)
+        except OSError: pass
+
+def _descendants(pid):
+    out, todo = [], [pid]
+    while todo:
+        p = todo.pop()
+        for t in os.listdir(f"/proc/{p}/task"):
+            try: kids = [int(k) for k in open(f"/proc/{p}/task/{t}/children").read().split()]
+            except OSError: kids = []
+            out += kids; todo += kids
+    return out
+
+class EbpfSource:
+    """Events from the bpftrace program. cmd: start and follow this command; pid: follow a running process and its
+    descendants; whole_host: every task on the machine.
+
+    The followed tree lives in its own cgroup, so the kernel filters by cgroup id. pid/tid in the events are
+    kernel-global; inside a pid namespace (containers, WSL2) they differ from the pids user space sees, which is why
+    the response acts on the cgroup (freeze/kill) instead of calling kill() on a pid."""
+
+    def __init__(self, cmd=None, pid=0, whole_host=False):
+        self.bt = shutil.which("bpftrace")
+        if not self.bt: raise SystemExit("bpftrace not found: sudo apt install bpftrace")
+        if os.geteuid() != 0: raise SystemExit("the eBPF backend must run as root (sudo -E python3 live/monitor.py ...)")
+        if not os.path.exists(os.path.join(Cgroup.ROOT, "cgroup.procs")):
+            raise SystemExit("cgroup v2 is not mounted at /sys/fs/cgroup")
+        self.child = self.release = self.jail = self.self_cg = None
+        tag = f"hids-{os.getpid()}-{time.monotonic_ns() % 10 ** 6}"
+        if whole_host:
+            self.home = Cgroup.ROOT + open("/proc/self/cgroup").read().strip().split("::", 1)[1]
+            self.self_cg = Cgroup(tag + "-monitor"); self.self_cg.add(os.getpid())   # bpftrace inherits it too
+            self.args = (0, self.self_cg.id)
+        else:
+            self.jail = Cgroup(tag)
+            if cmd:
+                self.child, self.release = _gated(cmd); self.jail.add(self.child.pid)   # placed before it can run
+            else:
+                for p in [pid] + _descendants(pid): self.jail.add(p)
+            self.args = (self.jail.id, 0)
+
+    def respond(self, action):
+        if self.jail is None: return "no response in whole-host mode (no cgroup to act on)"
+        if action == "stop":
+            self.jail.freeze()
+            return f"froze cgroup {self.jail.path} (resume: echo 0 > {self.jail.path}/cgroup.freeze)"
+        self.jail.kill()
+        return f"killed every process in cgroup {self.jail.path}"
+
+    def _watch(self, tracer):
+        """end the stream once the followed tree is gone (or frozen by the response)"""
+        while tracer.poll() is None:
+            try: done = (self.child is None or self.child.poll() is not None) and not self.jail.pids()
+            except OSError: done = True
+            if done or self.jail.frozen():
+                time.sleep(0.3)                               # let bpftrace print the last events
+                tracer.terminate(); return
+            time.sleep(0.05)
+
+    def __iter__(self):
+        tracer = subprocess.Popen([self.bt, "-B", "line", BT_SCRIPT, *map(str, self.args)],
+                                  stdout=subprocess.PIPE, text=True, errors="replace")
+        ready = False
+        try:
+            for line in tracer.stdout:
+                if not ready:
+                    if line.startswith("Attaching"):      # bpftrace prints this once the probes are loaded
+                        ready = True; time.sleep(0.2)
+                        if self.jail: threading.Thread(target=self._watch, args=(tracer,), daemon=True).start()
+                        if self.release: self.release()
+                    continue
+                yield from parse_bpftrace(line)
             if not ready:
-                if line.startswith("Attaching"):      # bpftrace prints this once the probes are loaded
-                    ready = True; time.sleep(0.2)
-                    if release: release()
-                continue
-            evs = parse_bpftrace(line)
-            yield from evs
-            if child is not None and evs and evs[0][0] == "X" and evs[0][1] == child.pid:
-                break                                 # followed program finished
-        if not ready:
-            raise SystemExit(f"bpftrace exited before attaching its probes (code {tracer.wait()}); see its error above")
-    finally:
-        tracer.terminate(); tracer.wait()
-        if child is not None:
-            if not ready: child.kill()                # never let the program run unwatched
-            child.wait()
+                raise SystemExit(f"bpftrace exited before attaching its probes (code {tracer.wait()}); see its error above")
+        finally:
+            tracer.terminate(); tracer.wait()
+            frozen = self.jail is not None and self.jail.frozen()
+            if self.child is not None:
+                if not ready: self.child.kill()             # never let the program run unwatched
+                if not frozen: self.child.wait()
+            if self.jail is not None and not frozen: self.jail.remove()
+            if self.self_cg is not None:
+                with open(os.path.join(self.home, "cgroup.procs"), "w") as fh: fh.write(f"{os.getpid()}\n")
+                self.self_cg.remove()
 
 def replay_source(path, fmt):
     parse = StraceParser() if fmt == "strace" else parse_bpftrace

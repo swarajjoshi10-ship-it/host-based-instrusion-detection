@@ -27,9 +27,14 @@ that sequence in two ways:
 | **strace** (`ptrace(2)`) | The kernel stops the traced task at every system call entry and exit and wakes the tracer, which reads the registers. | no (for a command it starts) | High: at least two extra context switches per call, and the traced program waits while the tracer works. |
 
 ### Following processes correctly
-* **fork/clone**: the eBPF program listens on `sched:sched_process_fork` and adds every child (process *or* thread) of
-  a followed task to an in-kernel map, so nothing is missed between `fork()` and the child's first call.
-  With strace, the `clone`/`fork`/`vfork` return value names the child.
+* **fork/clone (eBPF): cgroups, not pids.** Before the watched program runs, the monitor creates a cgroup v2 group
+  (`/sys/fs/cgroup/hids-…`) and moves the program into it. Every process and thread it creates inherits the cgroup
+  inside the kernel, so the eBPF filter `cgroup == <id>` follows the whole tree with nothing missed between `fork()`
+  and the child's first call. With strace, the `clone`/`fork`/`vfork` return value names the child.
+* **pid namespaces**: eBPF reports the kernel's *global* pid/tid, but processes inside a container, or inside a
+  WSL2 distro (which runs in a nested pid namespace), see different, namespace-local pids. Following "pid 1234" from
+  the kernel side therefore silently matches nothing, and `kill(1234)` could hit the wrong process. A cgroup id
+  (the inode number of its directory) is the same in every namespace, which is why the eBPF backend uses it.
 * **execve**: a task keeps its pid but becomes a different program, so its name is taken from the successful
   `execve` (strace) or from `comm` on every event (eBPF).
 * **Threads**: windows are kept per kernel task (thread id); the response targets the thread group (process id).
@@ -42,8 +47,11 @@ ADFA-LD was recorded on 32-bit x86 (Ubuntu 11.04). The same libc call becomes a 
 `unistd_64.h` / `unistd_32.h` tables, so the ADFA-LD model *can* score live data, but see the results.
 
 ### Response
-A flagged process can be suspended with `SIGSTOP` (resume with `kill -CONT <pid>` after inspection) or terminated
-with `SIGKILL`. Both are delivered by the kernel, cannot be caught by the process, and act on the whole thread group.
+With strace, a flagged process is suspended with `SIGSTOP` (resume with `kill -CONT <pid>` after inspection) or
+terminated with `SIGKILL`. Both are delivered by the kernel, cannot be caught, and act on the whole thread group.
+With eBPF, the response acts on the watched cgroup: `--respond stop` writes `cgroup.freeze` (every task stops and
+stays frozen for inspection; `echo 0 > …/cgroup.freeze` resumes) and `--respond kill` writes `cgroup.kill`
+(SIGKILL to every task in the group, Linux ≥ 5.14), the same mechanisms container runtimes use.
 
 ---
 
@@ -53,7 +61,7 @@ with `SIGKILL`. Both are delivered by the kernel, cannot be caught by the proces
   kernel                                 user space (live/monitor.py, one core, ~28 MB)
  ┌──────────────────────────────┐       ┌───────────────────────────────────────────────────────────────┐
  │ raw_syscalls:sys_enter ──eBPF──ring──▶ parse ─▶ per-task window (last 20 calls, step 10)               │
- │ sched_process_fork / exit     │ buffer│            │                                                  │
+ │ filter: cgroup id; exit       │ buffer│            │                                                  │
  │        or                     │       │            ▼ batch of windows                                  │
  │ ptrace stops ───────── strace ──FIFO─▶ LSTM next-call model (numpy) ─▶ score = mean −log P(next call)  │
  └──────────────────────────────┘       │            │                                                  │
@@ -160,8 +168,12 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
   Much of the signal is "a program this service never runs" (e.g. `find`, `id`) plus unusual calls in bash itself
   (`connect`, `dup2`).
 * strace slows syscall-heavy programs by up to ×200; it is the fallback, not the intended deployment.
-* The eBPF backend is implemented and its output parser is unit-tested, but it has not yet been run in this
+* The eBPF backend's output parser is unit-tested, but the cgroup-based capture has not yet completed a run in this
   environment (needs root). Its overhead columns are pending.
+* With eBPF, the response acts on the whole watched tree (its cgroup), not on the single flagged process; in
+  whole-host mode there is no cgroup to act on, so no response is taken. `--pid` moves the existing process tree
+  into a new cgroup, which also changes its resource accounting.
+* Ubuntu 22.04's bpftrace 0.14 cannot run scripts with `BEGIN`/`END` blocks (stripped binary), so the script has none.
 * Whole-host eBPF mode produces every system call on the machine; a single Python consumer cannot keep up on a busy
   host and the kernel will drop events (counted and reported).
 * An attacker who knows the model can try to mimic normal call sequences (mimicry attacks); arguments and return

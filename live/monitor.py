@@ -38,10 +38,10 @@ def main():
     ap.add_argument("--threshold", default="live_p99", help="live_p99 | live_p95 (calibrated for this live rule) or a number")
     ap.add_argument("--min_windows", type=int, help="windows a task must produce before it can be flagged while running (default: the model's)")
     ap.add_argument("--batch", type=int, default=16, help="windows scored together: larger = less CPU, later alerts")
-    ap.add_argument("--respond", choices=["none", "stop", "kill"], default="none", help="SIGSTOP or SIGKILL a flagged process")
+    ap.add_argument("--respond", choices=["none", "stop", "kill"], default="none", help="strace: SIGSTOP/SIGKILL the flagged process; ebpf: freeze/kill the watched cgroup")
     ap.add_argument("--record", help="folder to write one trace file per task (x86_64 numbers, ADFA-LD format)")
     ap.add_argument("--tag", default="run", help="file name prefix for --record")
-    ap.add_argument("--pid", type=int, default=0, help="ebpf: follow this running process and its descendants")
+    ap.add_argument("--pid", type=int, default=0, help="ebpf: follow this running process and its descendants (moved into a new cgroup)")
     ap.add_argument("--all", action="store_true", help="ebpf: whole host")
     ap.add_argument("--replay", help="replay a saved strace/bpftrace output file"); ap.add_argument("--replay_format", default="strace")
     ap.add_argument("--log", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "alerts.jsonl"))
@@ -64,7 +64,7 @@ def main():
         src = capture.strace_source(cmd)
     elif a.backend == "ebpf":
         if not (cmd or a.pid or a.all): ap.error("ebpf backend needs a command, --pid or --all")
-        src = capture.ebpf_source(cmd=cmd or None, pid=a.pid)
+        src = capture.EbpfSource(cmd=cmd or None, pid=a.pid, whole_host=a.all)
     else:
         src = capture.replay_source(a.replay, a.replay_format)
     live = a.backend != "replay"
@@ -87,10 +87,14 @@ def main():
         rec = dict(time=time.strftime("%H:%M:%S"), tid=t.tid, pid=t.tgid, comm=t.comm, score=round(t.mean, 3),
                    threshold=round(thr, 3), windows=t.nwin, calls=t.n, when=when, worst_window=top, response=a.respond)
         act = ""
-        if when == "running" and a.respond != "none" and t.tgid and t.tgid != os.getpid():
-            sig = signal.SIGSTOP if a.respond == "stop" else signal.SIGKILL
-            try: os.kill(t.tgid, sig); act = f" -> sent {sig.name} to pid {t.tgid}"
-            except OSError as e: act = f" -> {a.respond} failed: {e}"
+        if when == "running" and a.respond != "none":
+            if a.backend == "ebpf":                           # event pids are kernel-global: act on the cgroup
+                try: act = " -> " + src.respond(a.respond)
+                except OSError as e: act = f" -> {a.respond} failed: {e}"
+            elif t.tgid and t.tgid != os.getpid():
+                sig = signal.SIGSTOP if a.respond == "stop" else signal.SIGKILL
+                try: os.kill(t.tgid, sig); act = f" -> sent {sig.name} to pid {t.tgid}"
+                except OSError as e: act = f" -> {a.respond} failed: {e}"
             rec["response_result"] = act.strip(" ->")
         print(f"\n[ALERT {rec['time']}] {t.comm or '?'} (pid {t.tgid}, tid {t.tid}) mean score {t.mean:.3f} > {thr:.3f} "
               f"after {t.nwin} windows / {t.n} calls ({when}){act}\n          most anomalous window: {' '.join(top)}", flush=True)
