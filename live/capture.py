@@ -14,7 +14,7 @@ Backends
           command it starts itself. Much slower, because every call costs two extra context switches.
   replay  re-reads a saved strace (-f) or bpftrace output file; used for tests.
 """
-import os, re, shutil, subprocess, tempfile, threading, time
+import os, pwd, re, shutil, subprocess, tempfile, threading, time
 from syscalls import name_to_x64
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -89,15 +89,34 @@ def strace_source(cmd):
     finally:
         proc.wait(); shutil.rmtree(tmp, ignore_errors=True)
 
-def _gated(cmd):
-    """Start cmd held at a gate (a shell blocked on read) so the tracer can attach to its pid before it runs."""
+def sudo_user():
+    """(uid, gid) of the user who ran sudo, or None when not running under sudo"""
+    if os.geteuid() == 0 and "SUDO_UID" in os.environ:
+        return int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
+    return None
+
+def _gated(cmd, user=None):
+    """Start cmd held at a gate (a shell blocked on read) so the tracer can attach before it runs.
+    user=(uid, gid): drop root privileges for the program; the monitor needs root, the watched program must not get it."""
+    exe = shutil.which(cmd[0]) or cmd[0]                      # absolute path: one execve, no PATH search by the gate
+    kw = {}
+    if user:
+        uid, gid = user
+        kw = dict(user=uid, group=gid, extra_groups=os.getgrouplist(pwd.getpwuid(uid).pw_name, gid))
     r, w = os.pipe()
     # the read end keeps its own number in the child (pass_fds); close_fds would undo a dup2 done in preexec_fn
-    p = subprocess.Popen(["sh", "-c", f'read _ <&{r}; exec {r}<&-; exec "$@"', "sh", *cmd], pass_fds=(r,))
+    p = subprocess.Popen(["/bin/sh", "-c", f'read _ <&{r}; exec {r}<&-; exec "$@"', "sh", exe, *cmd[1:]], pass_fds=(r,), **kw)
     os.close(r)
     def release():
         os.write(w, b"go\n"); os.close(w)
     return p, release
+
+EXECVE = 59                                                   # x86_64
+
+def bpftrace_env():
+    """bpftrace's per-CPU perf ring buffer defaults to 64 pages (256 KB). When it is full the kernel drops events
+    instead of slowing the program, so syscall bursts are lost; 1024 pages (4 MB per CPU) absorbs far more."""
+    return dict(os.environ, BPFTRACE_PERF_RB_PAGES=os.environ.get("BPFTRACE_PERF_RB_PAGES", "1024"))
 
 class Cgroup:
     """A cgroup v2 directory used as a container for the watched process tree."""
@@ -138,7 +157,7 @@ class EbpfSource:
     kernel-global; inside a pid namespace (containers, WSL2) they differ from the pids user space sees, which is why
     the response acts on the cgroup (freeze/kill) instead of calling kill() on a pid."""
 
-    def __init__(self, cmd=None, pid=0, whole_host=False):
+    def __init__(self, cmd=None, pid=0, whole_host=False, as_root=False):
         self.bt = shutil.which("bpftrace")
         if not self.bt: raise SystemExit("bpftrace not found: sudo apt install bpftrace")
         if os.geteuid() != 0: raise SystemExit("the eBPF backend must run as root (sudo -E python3 live/monitor.py ...)")
@@ -153,7 +172,8 @@ class EbpfSource:
         else:
             self.jail = Cgroup(tag)
             if cmd:
-                self.child, self.release = _gated(cmd); self.jail.add(self.child.pid)   # placed before it can run
+                self.child, self.release = _gated(cmd, None if as_root else sudo_user())
+                self.jail.add(self.child.pid)                 # placed in the cgroup before it can run
             else:
                 for p in [pid] + _descendants(pid): self.jail.add(p)
             self.args = (self.jail.id, 0)
@@ -177,9 +197,10 @@ class EbpfSource:
             time.sleep(0.05)
 
     def __iter__(self):
-        tracer = subprocess.Popen([self.bt, "-B", "line", BT_SCRIPT, *map(str, self.args)],
+        tracer = subprocess.Popen([self.bt, "-B", "line", BT_SCRIPT, *map(str, self.args)], env=bpftrace_env(),
                                   stdout=subprocess.PIPE, text=True, errors="replace")
         ready = False
+        gate, gate_tid = self.child is not None, None
         try:
             for line in tracer.stdout:
                 if not ready:
@@ -188,7 +209,15 @@ class EbpfSource:
                         if self.jail: threading.Thread(target=self._watch, args=(tracer,), daemon=True).start()
                         if self.release: self.release()
                     continue
-                yield from parse_bpftrace(line)
+                for ev in parse_bpftrace(line):
+                    if gate and ev[0] == "S":
+                        # the gate shell's own calls (read, close, ...) are not the program's: start at its execve,
+                        # exactly where a trace started by strace begins
+                        gate_tid = gate_tid or ev[1]
+                        if ev[1] == gate_tid:
+                            if ev[3] != EXECVE: continue
+                            gate = False
+                    yield ev
             if not ready:
                 raise SystemExit(f"bpftrace exited before attaching its probes (code {tracer.wait()}); see its error above")
         finally:

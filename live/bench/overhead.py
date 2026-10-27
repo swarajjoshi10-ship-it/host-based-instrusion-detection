@@ -49,7 +49,23 @@ CONDITIONS = {
 if a.ebpf:
     if os.geteuid() != 0: sys.exit("--ebpf needs root: sudo -E python3 live/bench/overhead.py --ebpf")
     CONDITIONS["ebpf"] = None                                 # handled below: tracer runs beside the workload
-    CONDITIONS["monitor-ebpf"] = lambda c: [*mon, "--backend", "ebpf", "--", *c]
+    # --as_root: under sudo every other condition runs the workload as root too, so keep it identical
+    CONDITIONS["monitor-ebpf"] = lambda c: [*mon, "--backend", "ebpf", "--as_root", "--", *c]
+
+def diagnose():
+    """show where every process involved is blocked (kernel wait channel) before giving up"""
+    print("\n--- processes at the time of the hang (STAT D = uninterruptible, WCHAN = kernel function it sleeps in)")
+    subprocess.run("ps -eo pid,ppid,stat,wchan:28,etime,cmd | grep -E 'bpftrace|storm|service|gzip|monitor.py|sh -c read|PID' "
+                   "| grep -v grep", shell=True)
+
+def stuck(msg, cg, child, tr):
+    diagnose()
+    try: print(f"cgroup {cg.path} still holds pids {cg.pids()}")
+    except OSError: pass
+    try: cg.kill()
+    except OSError: pass
+    tr.kill(); child.kill()
+    sys.exit("ebpf run aborted: " + msg)
 
 def timed(workload, stamp):
     """the workload wrapped so it records its own start and end time"""
@@ -63,20 +79,29 @@ def run_once(cond, workload):
         cg = capture.Cgroup(f"hids-bench-{os.getpid()}-{time.monotonic_ns() % 10 ** 6}"); cg.add(child.pid)
         out = os.path.join(tmp, "bt.out")                    # a file, so a slow reader can never block bpftrace
         with open(out, "w") as fh:
-            tr = subprocess.Popen(["bpftrace", "-B", "full", BT, str(cg.id), "0"], stdout=fh)
+            tr = subprocess.Popen(["bpftrace", "-B", "full", BT, str(cg.id), "0"], stdout=fh, env=capture.bpftrace_env())
+        t0 = time.time()
         while "Attaching" not in open(out).read():
-            if tr.poll() is not None:
-                child.kill(); child.wait(); cg.remove(); sys.exit(f"bpftrace failed to start (exit code {tr.returncode}); see its error above")
+            if tr.poll() is not None or time.time() - t0 > 30:
+                stuck(f"bpftrace did not attach (exit code {tr.poll()})", cg, child, tr)
             time.sleep(0.05)
         time.sleep(0.2); release()
-        child.wait(); time.sleep(0.3); tr.terminate(); tr.wait(); cg.remove()
+        try: child.wait(timeout=120)
+        except subprocess.TimeoutExpired: stuck("workload did not finish within 120 s under bpftrace", cg, child, tr)
+        time.sleep(0.3); tr.terminate()
+        try: tr.wait(timeout=15)
+        except subprocess.TimeoutExpired: stuck("bpftrace did not exit within 15 s of SIGTERM", cg, child, tr)
+        cg.remove()
         lines = open(out).read().splitlines()
         info["syscalls"] = sum(l.startswith("S ") for l in lines)
         info["lost"] = sum(int(l.split()[1]) for l in lines if l.startswith("Lost "))
         if child.returncode != 0 or not info["syscalls"]:
             sys.exit(f"ebpf run invalid: workload exit code {child.returncode}, {info['syscalls']} calls captured")
     else:
-        p = subprocess.run(CONDITIONS[cond](cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            p = subprocess.run(CONDITIONS[cond](cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+        except subprocess.TimeoutExpired as e:
+            diagnose(); sys.exit(f"{cond} did not finish within 300 s\n{(e.stderr or b'')[-2000:]}")
         if cond.startswith("monitor") and "system calls" not in p.stdout:
             sys.exit(f"{cond} failed (exit code {p.returncode}):\n{p.stderr[-2000:]}")
         m = re.search(r"monitor CPU ([\d.]+) s .*peak RSS ([\d.]+) MB", p.stdout)

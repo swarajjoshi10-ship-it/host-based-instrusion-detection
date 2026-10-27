@@ -174,6 +174,12 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
   whole-host mode there is no cgroup to act on, so no response is taken. `--pid` moves the existing process tree
   into a new cgroup, which also changes its resource accounting.
 * Ubuntu 22.04's bpftrace 0.14 cannot run scripts with `BEGIN`/`END` blocks (stripped binary), so the script has none.
+* eBPF drops events instead of slowing the program when bpftrace's per-CPU perf ring buffer is full. With the default
+  256 KB buffer, a first benchmark run lost 33,616 of 50,582 calls in the syscall storm, a blind spot an attacker
+  could exploit with a burst. The monitor now uses 4 MB per CPU (`BPFTRACE_PERF_RB_PAGES=1024`) and reports every loss.
+* The monitor needs root for eBPF, but the watched program runs as the user who invoked `sudo` (`--as_root` to
+  override). Running it as root changes its system calls (extra permission checks) and caused false alarms against
+  a model trained on user-level runs.
 * Whole-host eBPF mode produces every system call on the machine; a single Python consumer cannot keep up on a busy
   host and the kernel will drop events (counted and reported).
 * An attacker who knows the model can try to mimic normal call sequences (mimicry attacks); arguments and return

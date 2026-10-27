@@ -43,6 +43,7 @@ def main():
     ap.add_argument("--tag", default="run", help="file name prefix for --record")
     ap.add_argument("--pid", type=int, default=0, help="ebpf: follow this running process and its descendants (moved into a new cgroup)")
     ap.add_argument("--all", action="store_true", help="ebpf: whole host")
+    ap.add_argument("--as_root", action="store_true", help="ebpf: run the command as root instead of the user who ran sudo")
     ap.add_argument("--replay", help="replay a saved strace/bpftrace output file"); ap.add_argument("--replay_format", default="strace")
     ap.add_argument("--log", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "alerts.jsonl"))
     ap.add_argument("--quiet", action="store_true", help="no per-task summary table")
@@ -64,7 +65,7 @@ def main():
         src = capture.strace_source(cmd)
     elif a.backend == "ebpf":
         if not (cmd or a.pid or a.all): ap.error("ebpf backend needs a command, --pid or --all")
-        src = capture.EbpfSource(cmd=cmd or None, pid=a.pid, whole_host=a.all)
+        src = capture.EbpfSource(cmd=cmd or None, pid=a.pid, whole_host=a.all, as_root=a.as_root)
     else:
         src = capture.replay_source(a.replay, a.replay_format)
     live = a.backend != "replay"
