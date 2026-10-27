@@ -86,7 +86,7 @@ PHASE_REGISTRY = {
     },
     8: {
         "title": "Ablation and final results package",
-        "script": "phase8_ablation_final.py",
+        "script": "phase8_final_package.py",
         "weight": 5,
         "key_file": "results/final/README.md",
         "summary": "results/phase8/summary.md"
