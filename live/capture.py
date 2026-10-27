@@ -92,8 +92,8 @@ def strace_source(cmd):
 def _gated(cmd):
     """Start cmd held at a gate (a shell blocked on read) so the tracer can attach to its pid before it runs."""
     r, w = os.pipe()
-    def child_setup(): os.dup2(r, 3)
-    p = subprocess.Popen(["sh", "-c", 'read _ <&3; exec 3<&-; exec "$@"', "sh", *cmd], preexec_fn=child_setup, pass_fds=(r,))
+    # the read end keeps its own number in the child (pass_fds); close_fds would undo a dup2 done in preexec_fn
+    p = subprocess.Popen(["sh", "-c", f'read _ <&{r}; exec {r}<&-; exec "$@"', "sh", *cmd], pass_fds=(r,))
     os.close(r)
     def release():
         os.write(w, b"go\n"); os.close(w)

@@ -58,8 +58,8 @@ def run_once(cond, workload):
     if cond == "ebpf":
         # gate the workload so bpftrace follows its pid from the first call
         r, w = os.pipe()
-        child = subprocess.Popen(["sh", "-c", 'read _ <&3; exec 3<&-; exec "$@"', "sh", *cmd],
-                                 preexec_fn=lambda: os.dup2(r, 3), pass_fds=(r,), stdout=subprocess.DEVNULL)
+        child = subprocess.Popen(["sh", "-c", f'read _ <&{r}; exec {r}<&-; exec "$@"', "sh", *cmd],
+                                 pass_fds=(r,), stdout=subprocess.DEVNULL)
         os.close(r)
         out = os.path.join(tmp, "bt.out")                    # a file, so a slow reader can never block bpftrace
         with open(out, "w") as fh:
@@ -73,6 +73,8 @@ def run_once(cond, workload):
         lines = open(out).read().splitlines()
         info["syscalls"] = sum(l.startswith("S ") for l in lines)
         info["lost"] = sum(int(l.split()[1]) for l in lines if l.startswith("Lost "))
+        if child.returncode != 0 or not info["syscalls"]:
+            sys.exit(f"ebpf run invalid: workload exit code {child.returncode}, {info['syscalls']} calls captured")
     else:
         p = subprocess.run(CONDITIONS[cond](cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if cond.startswith("monitor") and "system calls" not in p.stdout:
