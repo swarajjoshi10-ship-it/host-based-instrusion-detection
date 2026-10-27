@@ -12,7 +12,8 @@ int main(int argc, char **argv)
 
 	for (int i = 0; i < n; i++) {
 		int fd = open("/etc/hostname", O_RDONLY);
-		read(fd, buf, sizeof(buf));
+		if (read(fd, buf, sizeof(buf)) < 0)
+			return 1;
 		close(fd);
 		stat("/etc/hostname", &st);
 		getppid();

@@ -7,40 +7,31 @@
  * Output, one line per event (parsed by live/capture.py):
  *   S <tgid> <tid> <x86_64 syscall nr> <comm>     a task entered a system call
  *   X <tid>                                         a task exited
+ * bpftrace itself prints "Attaching N probes..." once the probes are in place; the monitor waits for that line.
  *
  * Tasks are tracked by kernel pid (= thread id). The fork tracepoint fires for every new task, processes and threads
  * alike, so the set of followed tasks grows inside the kernel and nothing is missed between fork() and the first
  * user-space look at the child.
+ *
+ * No BEGIN/END blocks: they are uprobes on bpftrace's own binary, and the stripped bpftrace 0.14 in Ubuntu 22.04
+ * cannot resolve them ("Could not resolve symbol: /proc/self/exe:BEGIN_trigger"). The root pid is matched directly.
  */
 
-BEGIN
-{
-	if ($1 != 0) {
-		@track[$1] = 1;
-	}
-	printf("READY\n");
-}
-
 tracepoint:sched:sched_process_fork
-/@track[args->parent_pid]/
+/args->parent_pid == $1 || @track[args->parent_pid]/
 {
 	@track[args->child_pid] = 1;
 }
 
 tracepoint:raw_syscalls:sys_enter
-/($1 == 0 && pid != $2 && comm != "bpftrace") || @track[tid]/
+/($1 == 0 && pid != $2 && comm != "bpftrace") || tid == $1 || @track[tid]/
 {
 	printf("S %d %d %d %s\n", pid, tid, args->id, comm);
 }
 
 tracepoint:sched:sched_process_exit
-/$1 == 0 || @track[tid]/
+/$1 == 0 || tid == $1 || @track[tid]/
 {
 	printf("X %d\n", tid);
 	delete(@track[tid]);
-}
-
-END
-{
-	clear(@track);
 }

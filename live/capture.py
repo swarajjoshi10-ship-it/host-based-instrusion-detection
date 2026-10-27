@@ -108,19 +108,25 @@ def ebpf_source(cmd=None, pid=0):
     child, release = (None, None)
     if cmd: child, release = _gated(cmd); pid = child.pid
     tracer = subprocess.Popen([bt, "-B", "line", BT_SCRIPT, str(pid), str(os.getpid())], stdout=subprocess.PIPE, text=True, errors="replace")
+    ready = False
     try:
         for line in tracer.stdout:
-            if line.startswith("READY"):
-                time.sleep(0.5)                       # BEGIN can run before the last probe is attached
-                if release: release()
+            if not ready:
+                if line.startswith("Attaching"):      # bpftrace prints this once the probes are loaded
+                    ready = True; time.sleep(0.2)
+                    if release: release()
                 continue
             evs = parse_bpftrace(line)
             yield from evs
             if child is not None and evs and evs[0][0] == "X" and evs[0][1] == child.pid:
                 break                                 # followed program finished
+        if not ready:
+            raise SystemExit(f"bpftrace exited before attaching its probes (code {tracer.wait()}); see its error above")
     finally:
         tracer.terminate(); tracer.wait()
-        if child is not None: child.wait()
+        if child is not None:
+            if not ready: child.kill()                # never let the program run unwatched
+            child.wait()
 
 def replay_source(path, fmt):
     parse = StraceParser() if fmt == "strace" else parse_bpftrace

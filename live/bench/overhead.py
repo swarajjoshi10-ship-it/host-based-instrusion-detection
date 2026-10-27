@@ -61,12 +61,22 @@ def run_once(cond, workload):
         child = subprocess.Popen(["sh", "-c", 'read _ <&3; exec 3<&-; exec "$@"', "sh", *cmd],
                                  preexec_fn=lambda: os.dup2(r, 3), pass_fds=(r,), stdout=subprocess.DEVNULL)
         os.close(r)
-        tr = subprocess.Popen(["bpftrace", "-B", "full", BT, str(child.pid), str(os.getpid())], stdout=subprocess.PIPE, text=True)
-        tr.stdout.readline(); time.sleep(0.5); os.write(w, b"go\n"); os.close(w)
-        child.wait(); tr.terminate(); lost = sum(int(l.split()[1]) for l in tr.stdout if l.startswith("Lost "))
-        tr.wait(); info["lost"] = lost
+        out = os.path.join(tmp, "bt.out")                    # a file, so a slow reader can never block bpftrace
+        with open(out, "w") as fh:
+            tr = subprocess.Popen(["bpftrace", "-B", "full", BT, str(child.pid), str(os.getpid())], stdout=fh)
+        while "Attaching" not in open(out).read():
+            if tr.poll() is not None:
+                child.kill(); sys.exit(f"bpftrace failed to start (exit code {tr.returncode}); see its error above")
+            time.sleep(0.05)
+        time.sleep(0.2); os.write(w, b"go\n"); os.close(w)
+        child.wait(); tr.terminate(); tr.wait()
+        lines = open(out).read().splitlines()
+        info["syscalls"] = sum(l.startswith("S ") for l in lines)
+        info["lost"] = sum(int(l.split()[1]) for l in lines if l.startswith("Lost "))
     else:
-        p = subprocess.run(CONDITIONS[cond](cmd), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        p = subprocess.run(CONDITIONS[cond](cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if cond.startswith("monitor") and "system calls" not in p.stdout:
+            sys.exit(f"{cond} failed (exit code {p.returncode}):\n{p.stderr[-2000:]}")
         m = re.search(r"monitor CPU ([\d.]+) s .*peak RSS ([\d.]+) MB", p.stdout)
         if m: info["monitor_cpu_s"], info["monitor_rss_mb"] = float(m.group(1)), float(m.group(2))
         m = re.search(r"\] (\d+) system calls", p.stdout)
