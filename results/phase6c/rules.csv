@@ -1,0 +1,10 @@
+extra_train,method,pct,auc,precision,recall,f1,far
+3000,rule: mean (earlier final),99,0.8627,0.9259,0.134,0.2342,0.0107
+3000,rule: mean (earlier final),95,0.8627,0.8639,0.3914,0.5387,0.0617
+3000,rule: mean (earlier final),90,0.8627,0.8178,0.4933,0.6154,0.1099
+3000,rule: mean (chosen),99,0.8627,0.9259,0.134,0.2342,0.0107
+3000,rule: mean (chosen),95,0.8627,0.8639,0.3914,0.5387,0.0617
+3000,rule: mean (chosen),90,0.8627,0.8178,0.4933,0.6154,0.1099
+3000,combiner (LR on features),99,0.8662,0.9286,0.1394,0.2424,0.0107
+3000,combiner (LR on features),95,0.8662,0.8671,0.4021,0.5495,0.0617
+3000,combiner (LR on features),90,0.8662,0.8201,0.5255,0.6405,0.1153

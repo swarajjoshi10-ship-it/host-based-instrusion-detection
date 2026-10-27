@@ -15,8 +15,8 @@
 
 | Feature Set | Dimension $D$ | Train Windows | Zero Sparsity | Extraction Time |
 | :--- | :---: | :---: | :---: | :---: |
-| Baseline (Histogram + Bigrams) | 407 | 29605 | 96.67% | 6.087 s |
-| Richer (Histogram + Bigrams + Trigrams) | 663 | 29605 | 96.49% | 8.706 s |
+| Baseline (Histogram + Bigrams) | 407 | 29605 | 96.67% | 5.628 s |
+| Richer (Histogram + Bigrams + Trigrams) | 663 | 29605 | 96.49% | 10.058 s |
 
 ### Output Artifacts for Downstream Detectors
 - `features_baseline.npz`: Baseline features ($D=407$) ready for Phase 3 and Phase 4.

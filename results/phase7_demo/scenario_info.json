@@ -1,0 +1,22 @@
+{
+ "Bruteforce_CWE-307": {
+  "rule": "mean",
+  "tune_auc": {
+   "mean": 0.999,
+   "max": 0.9783,
+   "top10": 0.9977
+  },
+  "baselines": {
+   "length": 0.5988,
+   "threads": 0.8532,
+   "freq_if": 0.9876
+  },
+  "notes": [
+   "This scenario is easy: a frequency-only Isolation Forest already reaches AUC 0.988, so a high LSTM score here is not strong evidence on its own.",
+   "Thresholds learned from validation recordings gave about 7.5% false alarms at the 99th percentile, so validation and test normals differ somewhat.",
+   "The tuned threshold uses labelled attack recordings from the tuning half, so it is not a normal-data-only setting."
+  ],
+  "protocol": "train 210 | calibration 60 | tuning half 453 (69 attacks) | test half 454 (70 attacks)",
+  "windows": "vocabulary 38, train windows 20000 (cap 20000)"
+ }
+}

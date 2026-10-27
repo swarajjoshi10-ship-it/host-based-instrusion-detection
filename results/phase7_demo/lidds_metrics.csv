@@ -1,0 +1,7 @@
+scenario,seed,threshold,rule,auc,epochs,train_s,ms_per_window,params,size_kb,n_train_windows,n_test_recordings,n_test_attacks,precision,recall,f1,far
+Bruteforce_CWE-307,0,calib99,mean,0.9991,3,7.5,0.0322,28968,116.0,20000,454,70,0.7071,1.0,0.8284,0.0755
+Bruteforce_CWE-307,0,calib95,mean,0.9991,3,7.5,0.0322,28968,116.0,20000,454,70,0.6481,1.0,0.7865,0.099
+Bruteforce_CWE-307,0,tuned_on_tuning_half,mean,0.9991,3,7.5,0.0322,28968,116.0,20000,454,70,1.0,0.9571,0.9781,0.0
+Bruteforce_CWE-307,0,calib99,mean,0.9991,3,3.8,0.055,28968,116.0,20000,454,70,0.7071,1.0,0.8284,0.0755
+Bruteforce_CWE-307,0,calib95,mean,0.9991,3,3.8,0.055,28968,116.0,20000,454,70,0.6481,1.0,0.7865,0.099
+Bruteforce_CWE-307,0,tuned_on_tuning_half,mean,0.9991,3,3.8,0.055,28968,116.0,20000,454,70,1.0,0.9571,0.9781,0.0

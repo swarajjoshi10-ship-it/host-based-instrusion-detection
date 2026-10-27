@@ -7,7 +7,7 @@ mode: full
 - **Recurrent Layer**: 1-layer LSTM with 64 units
 - **Classifier Head**: Linear projection from 64 to 151 logits
 - **Total Parameters**: 39,735 | Serialized size: 158.0 KB (BytesIO)
-- **Training Time**: 25.9 s (8 epochs)
+- **Training Time**: 26.1 s (8 epochs)
 - **Threading**: torch.set_num_threads(1) + OMP/MKL=1.
 
 ### Anomaly Scoring Mechanism
@@ -20,5 +20,5 @@ Trace scores are the mean of window scores.
 
 | Model | Percentile | Precision | Recall | F1 Score | FAR | ROC AUC | ms/win | inf_mem MB | cpu/1k win s |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| LSTM (next-call NLL) | 99% | 0.960 | 0.127 | 0.225 | 0.005 | 0.835 | 0.0329 | 1.42 | 0.032862 |
-| LSTM (next-call NLL) | 95% | 0.887 | 0.275 | 0.420 | 0.035 | 0.835 | 0.0329 | 1.42 | 0.032862 |
+| LSTM (next-call NLL) | 99% | 0.960 | 0.127 | 0.225 | 0.005 | 0.835 | 0.0331 | 1.41 | 0.033103 |
+| LSTM (next-call NLL) | 95% | 0.887 | 0.275 | 0.420 | 0.035 | 0.835 | 0.0331 | 1.41 | 0.033103 |
