@@ -8,10 +8,11 @@ learned from normal traces. Optionally stops or kills the offending process.
   # follow one command (no root needed with strace)
   python3 live/monitor.py --model live/models/host.npz --backend strace -- bash live/demo/service.sh
   # same with eBPF, kernel-side capture
-  sudo -E python3 live/monitor.py --model live/models/host.npz --backend ebpf -- bash live/demo/service.sh
+  # (env "PATH=$PATH": sudo resets PATH, and a different PATH changes how shells look up commands)
+  sudo -E env "PATH=$PATH" python3 live/monitor.py --model live/models/host.npz --backend ebpf -- bash live/demo/service.sh
   # watch a running process tree / the whole host (eBPF)
-  sudo -E python3 live/monitor.py --model live/models/host.npz --backend ebpf --pid 1234
-  sudo -E python3 live/monitor.py --model live/models/host.npz --backend ebpf --all
+  sudo -E env "PATH=$PATH" python3 live/monitor.py --model live/models/host.npz --backend ebpf --pid 1234
+  sudo -E env "PATH=$PATH" python3 live/monitor.py --model live/models/host.npz --backend ebpf --all
   # record normal traces for training (no model needed)
   python3 live/monitor.py --backend strace --record live/recordings/normal_train -- bash live/demo/service.sh
 """

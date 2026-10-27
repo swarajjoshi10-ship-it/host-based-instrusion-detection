@@ -105,18 +105,24 @@ training.
   of 20 values. That gave a false alarm rate of 0.10 on the test runs. A separate set of 100 calibration runs was then
   added. This change was made after seeing test numbers, so it is reported here.
 
-### Overhead (`live/bench/overhead.py`, median of 5 runs, wall time of the workload itself)
+### Overhead (`live/bench/overhead.py --ebpf` as root, median of 5 runs, wall time of the workload itself)
 
-| Workload | No monitor | strace only | strace + monitor | eBPF only | eBPF + monitor |
+| Workload | No monitor | strace only | strace + monitor | eBPF only | **eBPF + monitor** |
 |---|---|---|---|---|---|
-| Syscall storm (50 k calls in a tight loop) | 0.031 s | 4.86 s (×157) | 6.57 s (×213) | pending | pending |
-| Report service ×10 (43 k calls, ~230 processes) | 0.641 s | 4.60 s (×7.2) | 5.78 s (×9.0) | pending | pending |
-| gzip 32 MB (1.7 k calls, CPU bound) | 0.735 s | 0.96 s (×1.31) | 1.01 s (×1.38) | pending | pending |
+| Syscall storm (50 k calls in a tight loop) | 0.015 s | 2.95 s (×197) | 3.75 s (×251) | 0.095 s (×6.4) | **0.095 s (×6.4)** |
+| Report service ×10 (43 k calls, ~230 processes) | 0.229 s | 2.74 s (×12.0) | 3.41 s (×14.9) | 0.338 s (×1.47) | **0.332 s (×1.45)** |
+| gzip 32 MB (1.7 k calls, CPU bound) | 0.462 s | 0.58 s (×1.25) | 0.62 s (×1.34) | 0.481 s (×1.04) | **0.482 s (×1.04)** |
 
-Monitor process: 28 MB peak RSS, about 0.12–0.19 ms per scored window, 0.15–2.3 s of CPU per workload.
-Overhead grows with the **system call rate**, not with the work done: ptrace makes every call pay for context
-switches, so syscall-heavy programs suffer most. That is the motivation for the eBPF backend. The eBPF columns need
-root; run the command in section 4 to fill them in.
+eBPF lost **0** events in every run (with the 4 MB-per-CPU ring buffer) and the monitor scored all of them:
+50,552 / 42,737 / 1,685 calls. The monitor process: 28 MB peak RSS, 0.05–0.39 s of CPU per workload,
+about 0.1 ms per scored window.
+
+* Overhead grows with the **system call rate**, not with the work done. ptrace stops the program twice per call and
+  wakes the tracer each time, so a tight syscall loop runs ~200× slower; the same loop under eBPF pays only for a
+  small in-kernel program per call (×6.4, i.e. roughly 1.6 µs per call), and ordinary programs ×1.04–1.5.
+* With eBPF, the monitor adds almost nothing on top of capture (same times as "eBPF only"): the kernel buffers the
+  events and the program never waits for the detector. With strace, the program does wait (×197 → ×251).
+* Note: the timing above is from one sudo run; all workloads ran as root there, in every condition alike.
 
 ---
 
@@ -139,8 +145,8 @@ python3 live/demo/listener.py &
 ATTACK=revshell python3 live/monitor.py --model live/models/host.npz --respond kill -- bash live/demo/service.sh 7
 
 # eBPF backend (root): same command, kernel-side capture; or a running process tree / the whole host
-ATTACK=revshell sudo -E python3 live/monitor.py --backend ebpf --model live/models/host.npz --respond kill -- bash live/demo/service.sh 7
-sudo -E python3 live/monitor.py --backend ebpf --model live/models/host.npz --pid <PID>
+ATTACK=revshell sudo -E env "PATH=$PATH" python3 live/monitor.py --backend ebpf --model live/models/host.npz --respond kill -- bash live/demo/service.sh 7
+sudo -E env "PATH=$PATH" python3 live/monitor.py --backend ebpf --model live/models/host.npz --pid <PID>
 
 python3 live/bench/overhead.py                    # strace overhead
 sudo -E python3 live/bench/overhead.py --ebpf     # adds the eBPF columns
@@ -167,9 +173,10 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
   show that the pipeline works end to end; they are not a measure of accuracy on a busy general-purpose server.
   Much of the signal is "a program this service never runs" (e.g. `find`, `id`) plus unusual calls in bash itself
   (`connect`, `dup2`).
-* strace slows syscall-heavy programs by up to ×200; it is the fallback, not the intended deployment.
-* The eBPF backend's output parser is unit-tested, but the cgroup-based capture has not yet completed a run in this
-  environment (needs root). Its overhead columns are pending.
+* strace slows syscall-heavy programs by up to ×250; it is the fallback, not the intended deployment.
+* The model also learns the *environment*: under `sudo`, PATH is replaced by `secure_path`, bash's command lookup
+  makes different calls, and a normal run raised 3 false alarms (reproduced without eBPF by running the strace
+  monitor with sudo's PATH). Watched programs must run in the environment the normal traces were recorded in.
 * With eBPF, the response acts on the whole watched tree (its cgroup), not on the single flagged process; in
   whole-host mode there is no cgroup to act on, so no response is taken. `--pid` moves the existing process tree
   into a new cgroup, which also changes its resource accounting.

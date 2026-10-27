@@ -172,7 +172,12 @@ class EbpfSource:
         else:
             self.jail = Cgroup(tag)
             if cmd:
-                self.child, self.release = _gated(cmd, None if as_root else sudo_user())
+                user = None if as_root else sudo_user()
+                if user:
+                    print("[hids] the program runs as uid %d. sudo replaces PATH, which changes how shells look up commands;"
+                          " start the monitor with  sudo -E env \"PATH=$PATH\" python3 ...  so it sees the same environment"
+                          " as the training runs" % user[0], flush=True)
+                self.child, self.release = _gated(cmd, user)
                 self.jail.add(self.child.pid)                 # placed in the cgroup before it can run
             else:
                 for p in [pid] + _descendants(pid): self.jail.add(p)

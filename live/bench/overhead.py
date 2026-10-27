@@ -132,10 +132,7 @@ for wname, wl in WORKLOADS.items():
 
 out = os.path.join(LIVE, "results", "overhead.csv"); os.makedirs(os.path.dirname(out), exist_ok=True)
 keys = ["workload", "condition", "median_s", "slowdown", "min_s", "max_s", "repeats", "syscalls", "monitor_cpu_s", "monitor_rss_mb", "lost"]
-mode = "a" if os.path.exists(out) and a.ebpf else "w"            # the root run adds its rows to the strace run's file
-with open(out, mode, newline="") as fh:
-    w = csv.DictWriter(fh, fieldnames=keys)
-    if mode == "w": w.writeheader()
-    w.writerows([r for r in rows if mode == "w" or r["condition"].endswith("ebpf")])
+with open(out, "w", newline="") as fh:                       # one run = one file: every slowdown has the same baseline
+    w = csv.DictWriter(fh, fieldnames=keys); w.writeheader(); w.writerows(rows)
 shutil.rmtree(tmp, ignore_errors=True)
 print(f"\nsaved {os.path.relpath(out, ROOT)}")
