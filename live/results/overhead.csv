@@ -1,16 +1,16 @@
 workload,condition,median_s,slowdown,min_s,max_s,repeats,syscalls,monitor_cpu_s,monitor_rss_mb,lost
-syscall storm,none,0.031,1.0,0.029,0.035,5,,,,
-syscall storm,strace,4.859,157.33,4.601,5.621,5,,,,
-syscall storm,monitor-strace,6.573,212.86,6.415,7.391,5,50584,2.34,27.9,
-report service x10,none,0.641,1.0,0.597,0.807,5,,,,
-report service x10,strace,4.596,7.17,4.46,4.716,5,,,,
-report service x10,monitor-strace,5.78,9.02,5.696,6.174,5,42880,1.97,28.4,
-gzip 32 MB,none,0.735,1.0,0.72,0.794,5,,,,
-gzip 32 MB,strace,0.962,1.31,0.925,0.97,5,,,,
-gzip 32 MB,monitor-strace,1.011,1.38,0.993,1.092,5,1736,0.15,27.8,
-syscall storm,ebpf,0.095,6.39,0.094,0.097,5,50586,,,0
-syscall storm,monitor-ebpf,0.095,6.36,0.091,0.097,5,50552,0.37,27.8,
-report service x10,ebpf,0.338,1.47,0.333,0.361,5,43031,,,0
-report service x10,monitor-ebpf,0.332,1.45,0.309,0.353,5,42737,0.39,28.4,
-gzip 32 MB,ebpf,0.481,1.04,0.478,0.484,5,1719,,,0
-gzip 32 MB,monitor-ebpf,0.482,1.04,0.479,0.484,5,1685,0.05,27.8,
+syscall storm,none,0.015,1.0,0.014,0.015,5,,,,
+syscall storm,strace,2.923,200.8,2.915,3.021,5,,,,
+syscall storm,monitor-strace,3.775,259.27,3.703,3.84,5,50582,1.13,27.7,
+syscall storm,ebpf,0.095,6.5,0.094,0.095,5,50586,,,0
+syscall storm,monitor-ebpf,0.093,6.39,0.092,0.096,5,50552,0.37,27.9,
+report service x10,none,0.361,1.0,0.236,0.421,5,,,,
+report service x10,strace,2.773,7.68,2.729,2.811,5,,,,
+report service x10,monitor-strace,3.64,10.08,3.389,4.051,5,42767,1.03,28.2,
+report service x10,ebpf,0.407,1.13,0.335,0.492,5,43031,,,0
+report service x10,monitor-ebpf,0.316,0.88,0.31,0.337,5,42737,0.39,28.4,
+gzip 32 MB,none,0.466,1.0,0.461,0.471,5,,,,
+gzip 32 MB,strace,0.581,1.25,0.576,0.602,5,,,,
+gzip 32 MB,monitor-strace,0.615,1.32,0.608,0.621,5,1715,0.06,27.7,
+gzip 32 MB,ebpf,0.494,1.06,0.481,0.528,5,1719,,,0
+gzip 32 MB,monitor-ebpf,0.483,1.04,0.462,0.593,5,1685,0.05,27.9,

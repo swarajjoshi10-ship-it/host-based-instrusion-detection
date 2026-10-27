@@ -74,19 +74,25 @@ def parse_bpftrace(line):
     return []
 
 # ------------------------------------------------------------------ sources
+# Watched programs always start like a service: own session (no controlling terminal) and stdin from /dev/null.
+# A shell attached to a terminal makes extra job-control calls (getpgrp, ioctl TCGETS, ...), so the same script run
+# from an interactive terminal and from a pipe produces different traces, and a model trained on one flags the other.
+DETACHED = dict(stdin=subprocess.DEVNULL, start_new_session=True)
+
 def strace_source(cmd):
     """Start cmd under strace -f and stream its events. strace writes to a FIFO so the traced program keeps its own
     stdout/stderr and does not inherit the pipe (strace opens -o files close-on-exec)."""
     if not shutil.which("strace"): raise SystemExit("strace not found: sudo apt install strace")
     tmp = tempfile.mkdtemp(prefix="hids_"); fifo = os.path.join(tmp, "events")
     os.mkfifo(fifo)
-    proc = subprocess.Popen(["strace", "-f", "-q", "-e", "signal=none", "-s", "0", "-o", fifo, "--", *cmd])
+    proc = subprocess.Popen(["strace", "-f", "-q", "-e", "signal=none", "-s", "0", "-o", fifo, "--", *cmd], **DETACHED)
     try:
         parse = StraceParser()
         with open(fifo, "r", errors="replace") as fh:
             for line in fh:
                 yield from parse(line)
     finally:
+        if proc.poll() is None: proc.terminate()               # monitor stopped early (Ctrl-C): strace detaches
         proc.wait(); shutil.rmtree(tmp, ignore_errors=True)
 
 def sudo_user():
@@ -105,7 +111,7 @@ def _gated(cmd, user=None):
         kw = dict(user=uid, group=gid, extra_groups=os.getgrouplist(pwd.getpwuid(uid).pw_name, gid))
     r, w = os.pipe()
     # the read end keeps its own number in the child (pass_fds); close_fds would undo a dup2 done in preexec_fn
-    p = subprocess.Popen(["/bin/sh", "-c", f'read _ <&{r}; exec {r}<&-; exec "$@"', "sh", exe, *cmd[1:]], pass_fds=(r,), **kw)
+    p = subprocess.Popen(["/bin/sh", "-c", f'read _ <&{r}; exec {r}<&-; exec "$@"', "sh", exe, *cmd[1:]], pass_fds=(r,), **DETACHED, **kw)
     os.close(r)
     def release():
         os.write(w, b"go\n"); os.close(w)

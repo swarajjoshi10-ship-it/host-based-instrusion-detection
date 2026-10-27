@@ -93,25 +93,31 @@ training.
 | Model | Threshold | Runs (normal / attack) | AUC | Precision | Recall | F1 | False alarm rate |
 |---|---|---|---|---|---|---|---|
 | Trained on this host | 99th pct (default) | 40 / 40 | 1.000 | 0.976 | 1.000 | **0.988** | **0.025** |
-| Trained on this host | 95th pct | 40 / 40 | 1.000 | 0.930 | 1.000 | 0.964 | 0.075 |
-| Trained on ADFA-LD | 99th pct | 40 / 40 | 0.437 | 0.500 | 1.000 | 0.667 | **1.000** |
+| Trained on this host | 95th pct | 40 / 40 | 1.000 | 0.976 | 1.000 | 0.988 | 0.025 |
+| Trained on ADFA-LD | 99th pct | 40 / 40 | 0.378 | 0.500 | 1.000 | 0.667 | **1.000** |
 
 * **A model must be trained on the host it protects.** The ADFA-LD model, even with the syscall translation, flags
-  *every* normal run: AUC 0.437 is worse than chance. Fourteen years of glibc and kernel changes alter normal
+  *every* normal run: AUC 0.378 is worse than chance. Fourteen years of glibc and kernel changes alter normal
   behaviour more than the attacks do.
-* Live, with `--respond kill`: the reverse shell's bash is flagged on the window containing `connect … dup2 …` and
-  killed; in the recon run, bash is killed before the SUID scan starts.
+* **It must also see the program in the same environment.** Run from an interactive terminal, the same script makes
+  extra job-control calls (`getpgrp`, `ioctl`) at startup; under `sudo`, PATH is replaced and bash's command lookup
+  changes. Each of these alone raised false alarms on normal runs. The monitor therefore always starts the watched
+  program like a service (own session, no controlling terminal, stdin from `/dev/null`) and keeps the user's PATH.
+  After that, 5 normal runs × with/without a terminal raised 0 alerts.
+* Live, with `--respond kill`: the reverse shell's bash is flagged on the window containing
+  `read socket connect fcntl … dup2` and killed, together with the shell it spawned.
 * In the first attempt, thresholds came from 20 calibration runs, so the "99th percentile" was simply the largest
   of 20 values. That gave a false alarm rate of 0.10 on the test runs. A separate set of 100 calibration runs was then
-  added. This change was made after seeing test numbers, so it is reported here.
+  added. This change was made after seeing test numbers, so it is reported here. The dataset was recorded again after
+  the launch change above, with the same result.
 
-### Overhead (`live/bench/overhead.py --ebpf` as root, median of 5 runs, wall time of the workload itself)
+### Overhead (`sudo -E python3 live/bench/overhead.py --ebpf`, one run, median of 5 repeats, workload wall time)
 
 | Workload | No monitor | strace only | strace + monitor | eBPF only | **eBPF + monitor** |
 |---|---|---|---|---|---|
-| Syscall storm (50 k calls in a tight loop) | 0.015 s | 2.95 s (×197) | 3.75 s (×251) | 0.095 s (×6.4) | **0.095 s (×6.4)** |
-| Report service ×10 (43 k calls, ~230 processes) | 0.229 s | 2.74 s (×12.0) | 3.41 s (×14.9) | 0.338 s (×1.47) | **0.332 s (×1.45)** |
-| gzip 32 MB (1.7 k calls, CPU bound) | 0.462 s | 0.58 s (×1.25) | 0.62 s (×1.34) | 0.481 s (×1.04) | **0.482 s (×1.04)** |
+| Syscall storm (50 k calls in a tight loop) | 0.015 s | 2.92 s (×201) | 3.78 s (×259) | 0.095 s (×6.5) | **0.093 s (×6.4)** |
+| Report service ×10 (43 k calls, ~230 processes) | 0.361 s | 2.77 s (×7.7) | 3.64 s (×10.1) | 0.407 s (×1.13) | **0.316 s (×0.88)** |
+| gzip 32 MB (1.7 k calls, CPU bound) | 0.466 s | 0.58 s (×1.25) | 0.62 s (×1.32) | 0.494 s (×1.06) | **0.483 s (×1.04)** |
 
 eBPF lost **0** events in every run (with the 4 MB-per-CPU ring buffer) and the monitor scored all of them:
 50,552 / 42,737 / 1,685 calls. The monitor process: 28 MB peak RSS, 0.05–0.39 s of CPU per workload,
@@ -119,10 +125,13 @@ about 0.1 ms per scored window.
 
 * Overhead grows with the **system call rate**, not with the work done. ptrace stops the program twice per call and
   wakes the tracer each time, so a tight syscall loop runs ~200× slower; the same loop under eBPF pays only for a
-  small in-kernel program per call (×6.4, i.e. roughly 1.6 µs per call), and ordinary programs ×1.04–1.5.
-* With eBPF, the monitor adds almost nothing on top of capture (same times as "eBPF only"): the kernel buffers the
-  events and the program never waits for the detector. With strace, the program does wait (×197 → ×251).
-* Note: the timing above is from one sudo run; all workloads ran as root there, in every condition alike.
+  small in-kernel program per call (×6.4, roughly 1.6 µs per call). For ordinary programs eBPF is within run-to-run
+  noise: the unmonitored service itself varied from 0.24 to 0.42 s across repeats, so ×0.88 means "no measurable
+  cost", not a speed-up.
+* With eBPF, the monitor adds nothing measurable on top of capture: the kernel buffers the events and the program never
+  waits for the detector. With strace, the program does wait (×201 → ×259).
+* All workloads ran as root in this run, in every condition alike. A previous run gave the same picture
+  (eBPF + monitor ×6.4 / ×1.45 / ×1.04).
 
 ---
 

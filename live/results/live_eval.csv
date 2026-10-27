@@ -1,5 +1,5 @@
 model,tag,threshold,n_normal,n_attack,auc,precision,recall,f1,far
-host.npz,strace,live_p95,40,40,1.0,0.9302,1.0,0.9639,0.075
+host.npz,strace,live_p95,40,40,1.0,0.9756,1.0,0.9877,0.025
 host.npz,strace,live_p99,40,40,1.0,0.9756,1.0,0.9877,0.025
-adfa.npz,host_recordings,live_p95,40,40,0.4372,0.5,1.0,0.6667,1.0
-adfa.npz,host_recordings,live_p99,40,40,0.4372,0.5,1.0,0.6667,1.0
+adfa.npz,host_recordings,live_p95,40,40,0.3781,0.5,1.0,0.6667,1.0
+adfa.npz,host_recordings,live_p99,40,40,0.3781,0.5,1.0,0.6667,1.0
