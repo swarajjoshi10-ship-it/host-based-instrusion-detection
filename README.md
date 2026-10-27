@@ -101,7 +101,8 @@ training.
   behaviour more than the attacks do.
 * **It must also see the program in the same environment.** Run from an interactive terminal, the same script makes
   extra job-control calls (`getpgrp`, `ioctl`) at startup; under `sudo`, PATH is replaced and bash's command lookup
-  changes. Each of these alone raised false alarms on normal runs. The monitor therefore always starts the watched
+  changes; started as `/usr/bin/bash` instead of `bash`, bash searches PATH for itself differently; even launching the
+  script from another working directory changes its trace. Each of these alone raised false alarms on normal runs. The monitor therefore always starts the watched
   program like a service (own session, no controlling terminal, stdin from `/dev/null`) and keeps the user's PATH.
   After that, 5 normal runs × with/without a terminal raised 0 alerts.
 * Live, with `--respond kill`: the reverse shell's bash is flagged on the window containing
@@ -178,6 +179,10 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
 ---
 
 ## 5. Limitations
+* The calibrated threshold sits right at the top of normal behaviour (normal runs launched through the eBPF path
+  scored 0.164 against a 0.165 threshold in an emulation), because normal runs of the demo service are nearly
+  identical. A real service with more varied normal behaviour would need more calibration data and gets a looser
+  threshold automatically; a fixed safety margin was deliberately not added after seeing results.
 * The demo service is small and repetitive (held-out normal runs score 0.17–0.27, attack runs 0.30–3.97), so the live detection numbers
   show that the pipeline works end to end; they are not a measure of accuracy on a busy general-purpose server.
   Much of the signal is "a program this service never runs" (e.g. `find`, `id`) plus unusual calls in bash itself

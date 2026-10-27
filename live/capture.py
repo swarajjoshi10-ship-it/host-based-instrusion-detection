@@ -111,7 +111,10 @@ def _gated(cmd, user=None):
         kw = dict(user=uid, group=gid, extra_groups=os.getgrouplist(pwd.getpwuid(uid).pw_name, gid))
     r, w = os.pipe()
     # the read end keeps its own number in the child (pass_fds); close_fds would undo a dup2 done in preexec_fn
-    p = subprocess.Popen(["/bin/sh", "-c", f'read _ <&{r}; exec {r}<&-; exec "$@"', "sh", exe, *cmd[1:]], pass_fds=(r,), **DETACHED, **kw)
+    # exec -a keeps argv[0] as typed ("bash", not "/usr/bin/bash"), exactly as strace and a shell would start it:
+    # bash searches PATH for itself only when argv[0] has no "/", so the startup calls differ otherwise
+    p = subprocess.Popen(["/bin/bash", "-c", f'read -r _ <&{r}; exec {r}<&-; exec -a "$0" "$@"', cmd[0], exe, *cmd[1:]],
+                         pass_fds=(r,), **DETACHED, **kw)
     os.close(r)
     def release():
         os.write(w, b"go\n"); os.close(w)
