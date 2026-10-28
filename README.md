@@ -83,18 +83,23 @@ stays frozen for inspection; `echo 0 > …/cgroup.freeze` resumes) and `--respon
 
 Environment: WSL2 Ubuntu 22.04, kernel 6.6.87, x86_64. Every number below comes from `live/results/*.csv`.
 
-### Detection (strace capture, `live/demo/`)
+### Detection (`live/demo/`)
 The demo workload is a small "report service" (bash script that copies, counts, hashes, sorts and compresses files;
 about 23 processes per run). Attacks are injected into the same service: **recon** (whoami/id/SUID scan),
 **adduser** (adds a uid-0 line to a copy of `/etc/passwd`), **revshell** (connects back to a local listener and runs
 its commands) and **exfil** (archives config files and sends them over TCP). Held-out runs use seeds not seen in
 training.
 
-| Model | Threshold | Runs (normal / attack) | AUC | Precision | Recall | F1 | False alarm rate |
-|---|---|---|---|---|---|---|---|
-| Trained on this host | 99th pct (default) | 40 / 40 | 1.000 | 0.976 | 1.000 | **0.988** | **0.025** |
-| Trained on this host | 95th pct | 40 / 40 | 1.000 | 0.976 | 1.000 | 0.988 | 0.025 |
-| Trained on ADFA-LD | 99th pct | 40 / 40 | 0.378 | 0.500 | 1.000 | 0.667 | **1.000** |
+Every row: 40 held-out normal runs and 40 attack runs (10 per payload), 99th-percentile threshold (the default),
+95th in brackets where it differs.
+
+| Model trained on | Test runs captured with | AUC | Precision | Recall | F1 | False alarm rate |
+|---|---|---|---|---|---|---|
+| this host, **eBPF** | **eBPF** | 1.000 | 1.000 (0.976) | 1.000 | **1.000** (0.988) | **0.000** (0.025) |
+| this host, strace | strace | 1.000 | 0.976 | 1.000 | **0.988** | **0.025** |
+| this host, strace | eBPF | 0.983 | 0.541 | 1.000 | 0.702 | **0.850** |
+| this host, eBPF | strace | 1.000 | 1.000 (0.784) | 1.000 | 1.000 (0.879) | 0.000 (0.275) |
+| ADFA-LD | strace | 0.378 | 0.500 | 1.000 | 0.667 | **1.000** |
 
 * **A model must be trained on the host it protects.** The ADFA-LD model, even with the syscall translation, flags
   *every* normal run: AUC 0.378 is worse than chance. Fourteen years of glibc and kernel changes alter normal
@@ -102,17 +107,23 @@ training.
 * **It must also see the program in the same environment.** Run from an interactive terminal, the same script makes
   extra job-control calls (`getpgrp`, `ioctl`) at startup; under `sudo`, PATH is replaced and bash's command lookup
   changes; started as `/usr/bin/bash` instead of `bash`, bash searches PATH for itself differently; even launching the
-  script from another working directory changes its trace. Each of these alone raised false alarms on normal runs. The monitor therefore always starts the watched
-  program like a service (own session, no controlling terminal, stdin from `/dev/null`) and keeps the user's PATH.
+  script from another working directory changes its trace. Each of these alone raised false alarms on normal runs.
+  The monitor therefore always starts the watched program like a service (own session, no controlling terminal, stdin from `/dev/null`) and keeps the user's PATH.
   After that, 5 normal runs × with/without a terminal raised 0 alerts.
 * **Train with the capture mechanism you detect with (observer effect).** ptrace stops the program at every call,
   which fixes the order of events such as a child's exit, bash's `wait4` and the SIGCHLD handler (`rt_sigreturn`):
   in 100 strace-recorded runs `wait4 → rt_sigreturn` appears 2,012 times and the reverse order never. Under eBPF the
   program runs at full speed and other orderings appear, so a strace-trained model raised false alarms on normal
-  eBPF-monitored runs even after the launch was matched exactly. `live/demo/ebpf_experiment.sh` records the dataset
-  through eBPF, trains on it, and measures both models on both kinds of recordings.
-* Live, with `--respond kill`: the reverse shell's bash is flagged on the window containing
-  `read socket connect fcntl … dup2` and killed, together with the shell it spawned.
+  eBPF-monitored runs even after the launch was matched exactly. Measured (table above): the strace-trained model
+  flags **34 of 40** normal eBPF-captured runs, the eBPF-trained model **0 of 40**. Its AUC stays 0.983, so the
+  attacks still stand out; what breaks is the threshold, calibrated on strace timing. Under eBPF, 5 of 280 runs
+  even contain one extra short-lived bash subshell that never appears when the same seed runs under strace.
+  `live/demo/ebpf_experiment.sh` reproduces all of this.
+* Live checks with the eBPF model (`ebpf_experiment.sh`, step 4): 2 of 3 fresh normal runs raised no alert; the
+  third (seed 5002) scored **0.181 against a 0.181 threshold** on a child-reaping window (`read wait4 wait4
+  rt_sigreturn …`). The reverse shell was flagged on `… socket connect fcntl … dup2` and its cgroup killed. The recon
+  run was killed on that same borderline pre-payload window, i.e. for the wrong reason; it does not count as a
+  detection. Earlier strace live checks: 0 alerts on 10 normal runs, reverse shell flagged on `socket connect … dup2`.
 * In the first attempt, thresholds came from 20 calibration runs, so the "99th percentile" was simply the largest
   of 20 values. That gave a false alarm rate of 0.10 on the test runs. A separate set of 100 calibration runs was then
   added. This change was made after seeing test numbers, so it is reported here. The dataset was recorded again after
@@ -187,10 +198,12 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
 ---
 
 ## 5. Limitations
-* The calibrated threshold sits right at the top of normal behaviour (normal runs launched through the eBPF path
-  scored 0.164 against a 0.165 threshold in an emulation), because normal runs of the demo service are nearly
-  identical. A real service with more varied normal behaviour would need more calibration data and gets a looser
-  threshold automatically; a fixed safety margin was deliberately not added after seeing results.
+* **The threshold sits right at the top of normal behaviour.** Normal runs of the demo service are nearly identical,
+  so the 99th percentile of 100 calibration runs is only just above typical scores (strace emulation: 0.164 vs 0.165;
+  live eBPF: one normal run at 0.181 vs 0.181). Rare but normal timing orderings at native speed are then enough for a
+  false alarm, and with `--respond kill` a false alarm kills a healthy run. The principled fix is more normal
+  training and calibration runs, so those orderings are learned and the percentile estimate is stable; a fixed safety
+  margin was deliberately not added after seeing results.
 * The demo service is small and repetitive (held-out normal runs score 0.17–0.27, attack runs 0.30–3.97), so the live detection numbers
   show that the pipeline works end to end; they are not a measure of accuracy on a busy general-purpose server.
   Much of the signal is "a program this service never runs" (e.g. `find`, `id`) plus unusual calls in bash itself

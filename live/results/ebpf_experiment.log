@@ -1,0 +1,70 @@
+== 1. recording through eBPF (09:21:27)
+normal_train: 100 runs
+normal_calib: 100 runs
+normal_test: 40 runs
+attack/recon: 10 runs
+
+== 1. recording through eBPF (2026-10-28 18:01:57)
+normal_train: 100 runs
+normal_calib: 100 runs
+normal_test: 40 runs
+attack/recon: 10 runs
+attack/adduser: 10 runs
+attack/revshell: 10 runs
+attack/exfil: 10 runs
+backend ebpf, trace files in live/recordings_ebpf: 6054
+
+== 2. training on eBPF recordings (18:03:01)
+[train] 100 runs, 2113 traces, 39701 windows, vocabulary 48 system calls, numbering x86_64
+[check] numpy vs PyTorch window scores on 500 windows: max difference 4.47e-07
+[calibrate] 100 normal runs / 2113 traces -> thresholds live_p95 0.173, live_p99 0.181, run_p95 0.155, run_p99 0.157, trace_p95 0.151, trace_p99 0.155
+[saved] live/models/host_ebpf.npz  (29938 parameters, 121.6 KB, 30 epochs, 48.7 s)
+
+== 3a. eBPF-trained model, eBPF-recorded test runs
+model host_ebpf.npz (numbering x86_64, trained on live/recordings_ebpf/normal_train)
+runs: 40 normal, 40 attack; mean processes per run 22.9
+unknown-call rate: normal 0.000, attack 0.004
+AUC 1.000
+live_p95 thr 0.173: precision 0.976 recall 1.000 F1 0.988 false alarm rate 0.025  (TP 40 FP 1 FN 0 TN 39)
+live_p99 thr 0.181: precision 1.000 recall 1.000 F1 1.000 false alarm rate 0.000  (TP 40 FP 0 FN 0 TN 40)
+per-run scores -> live/models/host_ebpf.ebpf.scores.csv ; summary appended to live/results/live_eval.csv
+
+== 3b. strace-trained model, eBPF-recorded test runs (observer effect)
+model host.npz (numbering x86_64, trained on live/recordings/normal_train)
+runs: 40 normal, 40 attack; mean processes per run 22.9
+unknown-call rate: normal 0.000, attack 0.004
+AUC 0.983
+live_p95 thr 0.164: precision 0.541 recall 1.000 F1 0.702 false alarm rate 0.850  (TP 40 FP 34 FN 0 TN 6)
+live_p99 thr 0.165: precision 0.541 recall 1.000 F1 0.702 false alarm rate 0.850  (TP 40 FP 34 FN 0 TN 6)
+per-run scores -> live/models/host.ebpf_recordings.scores.csv ; summary appended to live/results/live_eval.csv
+
+== 3c. eBPF-trained model, strace-recorded test runs (the reverse)
+model host_ebpf.npz (numbering x86_64, trained on live/recordings_ebpf/normal_train)
+runs: 40 normal, 40 attack; mean processes per run 22.8
+unknown-call rate: normal 0.000, attack 0.004
+AUC 1.000
+live_p95 thr 0.173: precision 0.784 recall 1.000 F1 0.879 false alarm rate 0.275  (TP 40 FP 11 FN 0 TN 29)
+live_p99 thr 0.181: precision 1.000 recall 1.000 F1 1.000 false alarm rate 0.000  (TP 40 FP 0 FN 0 TN 40)
+per-run scores -> live/models/host_ebpf.strace_recordings.scores.csv ; summary appended to live/results/live_eval.csv
+
+== 4. live checks with the eBPF model (18:06:16)
+-- normal run, seed 7
+[hids] 288 windows scored, 0.217 ms/window; 0 alert(s) -> /mnt/c/os proj/Host-Based-Intrustion-Detection/live/logs/alerts.jsonl
+-- normal run, seed 5000
+[hids] 430 windows scored, 0.177 ms/window; 0 alert(s) -> /mnt/c/os proj/Host-Based-Intrustion-Detection/live/logs/alerts.jsonl
+-- normal run, seed 5002
+[ALERT 18:06:25] bash (pid 76265, tid 76265) mean score 0.181 > 0.181 after 29 windows / 318 calls (running)
+          most anomalous window: rt_sigprocmask read wait4 wait4 rt_sigreturn read close rt_sigprocmask rt_sigprocmask rt_sigaction rt_sigaction rt_sigprocmask read getpid getpid newfstatat newfstatat newfstatat newfstatat newfstatat
+[hids] 290 windows scored, 0.188 ms/window; 1 alert(s) -> /mnt/c/os proj/Host-Based-Intrustion-Detection/live/logs/alerts.jsonl
+-- attack revshell, --respond kill
+[ALERT 18:06:28] bash (pid 76305, tid 76305) mean score 0.220 > 0.181 after 52 windows / 580 calls (running) -> killed every process in cgroup /sys/fs/cgroup/hids-71891-753613
+          most anomalous window: rt_sigaction wait4 rt_sigaction ioctl rt_sigprocmask wait4 rt_sigreturn rt_sigprocmask rt_sigprocmask read brk socket connect fcntl fcntl fcntl fcntl dup2 fcntl ioctl
+[ALERT 18:06:28] bash (pid 76325, tid 76325) mean score 0.937 > 0.181 after 5 windows / 100 calls (running) -> killed every process in cgroup /sys/fs/cgroup/hids-71891-753613
+          most anomalous window: rt_sigaction rt_sigaction rt_sigaction rt_sigaction rt_sigaction rt_sigaction dup2 fcntl dup2 fcntl execve brk arch_prctl mmap access openat newfstatat mmap close openat
+[hids] 247 windows scored, 0.191 ms/window; 2 alert(s) -> /mnt/c/os proj/Host-Based-Intrustion-Detection/live/logs/alerts.jsonl
+-- attack recon, --respond kill
+[ALERT 18:06:31] bash (pid 76343, tid 76343) mean score 0.181 > 0.181 after 29 windows / 312 calls (running) -> killed every process in cgroup /sys/fs/cgroup/hids-71929-368768
+          most anomalous window: rt_sigprocmask read wait4 wait4 rt_sigreturn read close rt_sigprocmask rt_sigprocmask rt_sigaction rt_sigaction rt_sigprocmask read getpid getpid newfstatat newfstatat newfstatat newfstatat newfstatat
+[hids] 127 windows scored, 0.252 ms/window; 1 alert(s) -> /mnt/c/os proj/Host-Based-Intrustion-Detection/live/logs/alerts.jsonl
+
+done (18:06:31); log: live/results/ebpf_experiment.log
