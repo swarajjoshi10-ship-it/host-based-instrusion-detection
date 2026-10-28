@@ -5,16 +5,18 @@
 # 2. trains and calibrates a model on it                     -> live/models/host_ebpf.npz
 # 3. evaluates eBPF-trained and strace-trained models on eBPF-recorded runs (and the reverse): the observer effect
 # 4. live checks with the eBPF model: a normal run, and a reverse shell with --respond kill
-# Everything is also written to live/results/ebpf_experiment.log.
+# Everything is also appended to live/results/ebpf_experiment.log. Interrupted? Run it again: runs already recorded
+# are kept and only the missing ones are recorded (FRESH=1 starts the recordings from scratch).
 set -eu
 cd "$(dirname "$0")/../.."
 [ "$(id -u)" = 0 ] || { echo "run as root: sudo -E env \"PATH=\$PATH\" bash live/demo/ebpf_experiment.sh"; exit 1; }
 mkdir -p live/results
-exec > >(tee live/results/ebpf_experiment.log) 2>&1
+exec > >(tee -a live/results/ebpf_experiment.log) 2>&1
 M=live/models
 
-echo "== 1. recording through eBPF ($(date +%T))"
-BACKEND=ebpf bash live/demo/collect.sh
+echo; echo "== 1. recording through eBPF ($(date "+%F %T"))"
+if [ "${FRESH:-0}" = 1 ]; then RESUME=0; else RESUME=1; fi
+BACKEND=ebpf RESUME=$RESUME bash live/demo/collect.sh
 
 echo; echo "== 2. training on eBPF recordings ($(date +%T))"
 python3 live/train.py --traces live/recordings_ebpf/normal_train --calib live/recordings_ebpf/normal_calib \
