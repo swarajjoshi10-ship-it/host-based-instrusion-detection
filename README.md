@@ -165,6 +165,12 @@ Host models ignore `rt_sigreturn` (see "signal-handler returns" below); *before*
   `connect … dup2` and the shell it spawned, exfil at `tar` and `cat`. False kills fixed on the way: bare `live_max`,
   1 of 8 normal runs killed (tie, 0.211 vs 0.211); +10% margin, 1 of 6 (rare signal ordering, 0.238 vs 0.232);
   +10% margin with `rt_sigreturn` ignored, 0 of 12.
+
+  **Live, eBPF backend, `--respond kill`, final models** (run from an interactive terminal): 5 of 5 normal runs on
+  unseen seeds were **not killed**; one raised an alert only (bash at 0.198: above the 0.167 alert threshold, below the
+  0.274 kill threshold, on a child-reaping window), which is the two-threshold design doing its job. Every attack was
+  killed during its payload, by killing its cgroup: recon at `id` (0.366), adduser at bash (0.393), the reverse shell at
+  bash (0.401) and the two shells it spawned (1.034), exfil at `tar` (0.385), its `sh` (3.570) and `cat` (0.714).
 * In the first attempt, thresholds came from 20 calibration runs, so the "99th percentile" was simply the largest
   of 20 values. That gave a false alarm rate of 0.10 on the test runs. A separate set of 100 calibration runs was then
   added. This change was made after seeing test numbers, so it is reported here. The dataset was recorded again after
