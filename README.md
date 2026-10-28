@@ -234,6 +234,9 @@ python3 live/evaluate.py --model live/models/adfa.npz --normal live/recordings/n
 
 Recording only (no model) for a new program: `python3 live/monitor.py --record <folder> --tag <run> -- <command>`.
 
+On WSL2, bpftrace may need tracefs first: `sudo mount -t tracefs nodev /sys/kernel/tracing`. If root's Python cannot
+import numpy under `sudo -E`, install the packages for root as well.
+
 ### Offline study
 ```
 python run_phase.py 1 ... 8            # data loading, features, baselines, autoencoder, LSTM, evaluation, LID-DS, report
@@ -245,43 +248,18 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
 ---
 
 ## 5. Limitations
-* **Ignoring `rt_sigreturn` was decided after seeing results**, like the two thresholds and the margin. It removes one
-  known source of timing noise; other asynchronous effects (scheduling, when a child exits) still shape traces. It is
-  also a trade-off for security: `rt_sigreturn` is the call that sigreturn-oriented programming (SROP) exploits abuse,
-  and the model no longer sees it at all.
-* **The kill threshold needed a margin, chosen after seeing results.** The rare child-reaping ordering scores a fixed
-  value (0.2110 for the strace model): it is the highest calibration score, so the bare `live_max` *equals* it, and a
-  normal run reproducing it tied the threshold and was killed (1 of 8). A 10% margin fixed this on every run tried,
-  but it was picked knowing that attacks scored at least ~50% above `live_max` (lowest 0.319 / 0.324). On a service
-  whose attacks were subtler, the margin could let real attacks through without being killed (they would still alert).
-* **The threshold sits right at the top of normal behaviour, and more data does not move it.** The demo service is
-  almost deterministic: **90% of the 300 calibration runs score exactly 0.1625**, and the 99th-percentile threshold is
-  0.1663. Rare timing orderings push about 1% of normal runs over it (3 of 300 calibration, 1 of 40 test), which is
-  what a 99th-percentile threshold means by construction. Tripling the normal data (100 → 300 runs) made the estimate
-  more accurate, and *lower* (0.181 → 0.166), not wider. The separation itself is large: highest normal score 0.242,
-  lowest attack score 0.324. With `--respond kill`, a ~1% per-run false alarm rate means about 1 healthy run in 100
-  is killed, as happened to one reverse-shell run before its payload.
-* The demo service is small and repetitive (held-out normal runs score 0.17–0.27, attack runs 0.30–3.97), so the live detection numbers
-  show that the pipeline works end to end; they are not a measure of accuracy on a busy general-purpose server.
-  Much of the signal is "a program this service never runs" (e.g. `find`, `id`) plus unusual calls in bash itself
-  (`connect`, `dup2`).
-* strace slows syscall-heavy programs by up to ×250; it is the fallback, not the intended deployment.
-* The model also learns the *environment*: under `sudo`, PATH is replaced by `secure_path`, bash's command lookup
-  makes different calls, and a normal run raised 3 false alarms (reproduced without eBPF by running the strace
-  monitor with sudo's PATH). Watched programs must run in the environment the normal traces were recorded in.
-* With eBPF, the response acts on the whole watched tree (its cgroup), not on the single flagged process; in
-  whole-host mode there is no cgroup to act on, so no response is taken. `--pid` moves the existing process tree
-  into a new cgroup, which also changes its resource accounting.
-* Ubuntu 22.04's bpftrace 0.14 cannot run scripts with `BEGIN`/`END` blocks (stripped binary), so the script has none.
-* eBPF drops events instead of slowing the program when bpftrace's per-CPU perf ring buffer is full. With the default
-  256 KB buffer, a first benchmark run lost 33,616 of 50,582 calls in the syscall storm, a blind spot an attacker
-  could exploit with a burst. The monitor now uses 4 MB per CPU (`BPFTRACE_PERF_RB_PAGES=1024`) and reports every loss.
-* The monitor needs root for eBPF, but the watched program runs as the user who invoked `sudo` (`--as_root` to
-  override). Running it as root changes its system calls (extra permission checks) and caused false alarms against
-  a model trained on user-level runs.
-* Whole-host eBPF mode produces every system call on the machine; a single Python consumer cannot keep up on a busy
-  host and the kernel will drop events (counted and reported).
-* An attacker who knows the model can try to mimic normal call sequences (mimicry attacks); arguments and return
-  values are not used.
-* On WSL2, bpftrace may need tracefs mounted first: `sudo mount -t tracefs nodev /sys/kernel/tracing`.
-  If root's Python cannot import numpy under `sudo -E`, install the packages for root as well.
+* **The demo service is a toy.** It is small and repetitive (held-out normal runs score 0.17–0.27, attacks 0.30–3.97),
+  so the results show that the pipeline works end to end, not accuracy on a busy general-purpose server. Much of the
+  signal is "a program this service never runs" (e.g. `find`, `id`).
+* **Three choices were made after seeing results:** separate alert and kill thresholds, the 10% kill margin above
+  `live_max`, and ignoring `rt_sigreturn`. Attacks scored at least ~50% above `live_max`, so on a service with subtler
+  attacks the margin could let one through unkilled (it would still alert). Ignoring `rt_sigreturn` also hides the
+  call that SROP exploits abuse.
+* **About 1% of normal runs raise an alert**, as a 99th-percentile threshold implies (3 of 300 calibration runs, 1 of
+  40 test runs), caused by rare timing orderings such as when a child process exits.
+* **The model also learns the environment.** PATH, the user (root or not) and `argv[0]` change the system calls, so
+  watched programs must run in the environment the normal traces were recorded in.
+* **Mimicry attacks:** an attacker who knows the model can imitate normal call sequences; arguments and return values
+  are not used.
+* **Overhead and scale:** strace slows syscall-heavy programs by up to ×250 (it is only the fallback). With eBPF, a
+  full ring buffer drops events (counted and reported), and whole-host mode can outpace the single Python consumer.
