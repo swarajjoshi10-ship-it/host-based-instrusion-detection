@@ -6,7 +6,8 @@ Score recorded live runs with a saved detector and report run-level metrics.
 A run (one monitored execution, all its processes) is flagged when any of its processes would trigger the live alert
 rule (running mean score above the threshold after min_windows windows, or at exit), exactly as monitor.py decides.
 Recorded traces are in x86_64 numbering and are translated when the model uses another one (e.g. ADFA-LD's i386).
-Writes per-run scores to <model>[.tag].scores.csv and appends a summary row to live/results/live_eval.csv.
+Writes per-run scores to <model>[.tag].scores.csv and its summary rows to live/results/live_eval.csv
+(replacing earlier rows for the same model and tag).
 """
 import argparse, csv, os
 import numpy as np
@@ -47,9 +48,8 @@ with open(base + ".scores.csv", "w", newline="") as fh:
     w = csv.writer(fh); w.writerow(["run", "label", "score", "unknown_rate", "processes", "calls"])
     for r in rows: w.writerow([os.path.relpath(r[0]), r[1], round(r[2], 4), round(r[3], 4), r[4], r[5]])
 out = os.path.join(ROOT, "live", "results", "live_eval.csv"); os.makedirs(os.path.dirname(out), exist_ok=True)
-new = not os.path.exists(out)
-with open(out, "a", newline="") as fh:
-    w = csv.DictWriter(fh, fieldnames=list(summary[0]))
-    if new: w.writeheader()
-    w.writerows(summary)
-print(f"per-run scores -> {os.path.relpath(base)}.scores.csv ; summary appended to {os.path.relpath(out)}")
+old = list(csv.DictReader(open(out))) if os.path.exists(out) else []
+old = [r for r in old if (r["model"], r["tag"]) != (summary[0]["model"], summary[0]["tag"])]   # a rerun replaces its rows
+with open(out, "w", newline="") as fh:
+    w = csv.DictWriter(fh, fieldnames=list(summary[0])); w.writeheader(); w.writerows(old + summary)
+print(f"per-run scores -> {os.path.relpath(base)}.scores.csv ; summary written to {os.path.relpath(out)}")

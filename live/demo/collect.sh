@@ -14,6 +14,8 @@
 set -eu
 cd "$(dirname "$0")/../.."
 NTRAIN=${1:-100}; NCAL=${2:-100}; NTEST=${3:-40}; NATT=${4:-10}
+# seed ranges: train 1..NTRAIN, test 1001..1000+NTEST, attack 2001..2000+NATT, calibration 3001..3000+NCAL
+[ "$NTRAIN" -le 1000 ] && [ "$NCAL" -le 1000 ] && [ "$NTEST" -le 1000 ] || { echo "at most 1000 runs per set (seed ranges)"; exit 1; }
 BACKEND=${BACKEND:-strace}
 if [ "$BACKEND" = ebpf ]; then R=${REC:-live/recordings_ebpf}; else R=${REC:-live/recordings}; fi
 if [ "${RESUME:-0}" != 1 ]; then rm -rf "$R"; fi
