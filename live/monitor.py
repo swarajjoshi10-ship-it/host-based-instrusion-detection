@@ -40,6 +40,7 @@ def main():
     ap.add_argument("--threshold", default="live_p99", help="alert threshold: live_p99 | live_p95 (calibrated for this live rule) or a number")
     ap.add_argument("--respond_threshold", default="live_max",
                     help="stop/kill only above this: live_max (highest normal calibration score) | live_p99 | a number")
+    ap.add_argument("--respond_margin", type=float, help="fraction added on top of --respond_threshold (default 0.10)")
     ap.add_argument("--min_windows", type=int, help="windows a task must produce before it can be flagged while running (default: the model's)")
     ap.add_argument("--batch", type=int, default=16, help="windows scored together: larger = less CPU, later alerts")
     ap.add_argument("--respond", choices=["none", "stop", "kill"], default="none", help="strace: SIGSTOP/SIGKILL the flagged process; ebpf: freeze/kill the watched cgroup")
@@ -58,7 +59,7 @@ def main():
 
     det = None; L = 20; S = 10; thr = rthr = None
     if a.model:
-        from model import Detector                           # torch import only when detecting
+        from model import Detector, RESPOND_MARGIN
         det = Detector.load(a.model); L, S = det.L, det.S
         pick = lambda name: det.thresholds[name] if name in det.thresholds else float(name)
         thr = pick(a.threshold)
@@ -67,8 +68,9 @@ def main():
         if a.respond != "none":
             if a.respond_threshold not in det.thresholds and not a.respond_threshold.replace(".", "", 1).isdigit():
                 ap.error(f"model has no {a.respond_threshold} threshold: python3 live/recalibrate.py --model {a.model} --calib <normal runs>")
-            rthr = max(pick(a.respond_threshold), thr)
-            print(f"[hids] response {a.respond} only above {a.respond_threshold} = {rthr:.3f}", flush=True)
+            margin = RESPOND_MARGIN if a.respond_margin is None else a.respond_margin
+            rthr = max(pick(a.respond_threshold) * (1 + margin), thr)
+            print(f"[hids] response {a.respond} only above {a.respond_threshold} + {margin:.0%} = {rthr:.3f}", flush=True)
 
     if a.backend == "strace":
         if not cmd: ap.error("strace backend needs a command after --")

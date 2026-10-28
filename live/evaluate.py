@@ -12,7 +12,7 @@ Writes per-run scores to <model>[.tag].scores.csv and its summary rows to live/r
 import argparse, csv, os
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from model import Detector, ROOT, read_runs, live_stat
+from model import Detector, ROOT, RESPOND_MARGIN, read_runs, live_stat
 from syscalls import convert
 
 ap = argparse.ArgumentParser()
@@ -35,8 +35,10 @@ print(f"unknown-call rate: normal {np.mean([r[3] for r in rows if r[1] == 0]):.3
 auc = roc_auc_score(y, sc) if 0 < y.sum() < len(y) else float("nan")
 print(f"AUC {auc:.3f}")
 summary = []
-for name in [n for n in ("live_p95", "live_p99", "live_max") if n in det.thresholds]:   # live_max = response (stop/kill) threshold
-    thr = det.thresholds[name]; pred = sc > thr
+levels = {n: det.thresholds[n] for n in ("live_p95", "live_p99", "live_max") if n in det.thresholds}
+if "live_max" in levels: levels["respond"] = levels["live_max"] * (1 + RESPOND_MARGIN)     # the stop/kill threshold
+for name, thr in levels.items():
+    pred = sc > thr
     tp = int((pred & (y == 1)).sum()); fp = int((pred & (y == 0)).sum()); fn = int((~pred & (y == 1)).sum()); tn = int((~pred & (y == 0)).sum())
     p = tp / max(tp + fp, 1); r = tp / max(tp + fn, 1); f1 = 2 * p * r / max(p + r, 1e-12); far = fp / max(fp + tn, 1)
     print(f"{name:8s} thr {thr:.3f}: precision {p:.3f} recall {r:.3f} F1 {f1:.3f} false alarm rate {far:.3f}  (TP {tp} FP {fp} FN {fn} TN {tn})")

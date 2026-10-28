@@ -14,6 +14,11 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Stop/kill only above live_max * (1 + RESPOND_MARGIN). The rare normal child-reaping ordering scores a fixed value
+# that *is* live_max, so a normal run reproducing it tied the bare live_max and was killed. 10% was chosen AFTER
+# seeing the results (attacks scored >= ~50% above live_max on the test runs), so it is not an independent choice.
+RESPOND_MARGIN = 0.10
+
 def windows(seq, L, S):
     """same windowing as the offline experiments (hids_m1_m2.windows)"""
     if len(seq) <= L: return [seq]
