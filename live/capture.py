@@ -14,7 +14,7 @@ Backends
           command it starts itself. Much slower, because every call costs two extra context switches.
   replay  re-reads a saved strace (-f) or bpftrace output file; used for tests.
 """
-import os, pwd, re, shutil, signal, subprocess, tempfile, threading, time
+import os, pwd, re, shutil, signal, subprocess, sys, tempfile, threading, time
 from syscalls import name_to_x64
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -74,10 +74,21 @@ def parse_bpftrace(line):
     return []
 
 # ------------------------------------------------------------------ sources
-# Watched programs always start like a service: own session (no controlling terminal) and stdin from /dev/null.
-# A shell attached to a terminal makes extra job-control calls (getpgrp, ioctl TCGETS, ...), so the same script run
-# from an interactive terminal and from a pipe produces different traces, and a model trained on one flags the other.
-DETACHED = dict(stdin=subprocess.DEVNULL, start_new_session=True)
+# Watched programs always start like a service: own session (no controlling terminal), stdin from /dev/null, and
+# stdout/stderr into a pipe that the monitor relays to its own stderr. A shell attached to a terminal makes extra
+# calls: job control at startup (getpgrp, ioctl TCGETS), and bash's checkwinsize asks the terminal for its size after
+# every external command (ioctl TIOCGWINSZ, then LINES/COLUMNS updates). The same script run from an interactive
+# terminal and from a pipe would produce different traces, and a model trained on one flags the other.
+DETACHED = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+
+def _relay(proc):
+    """copy the watched program's output to the monitor's stderr, so it stays visible without being a terminal"""
+    def run():
+        out = sys.stderr.buffer
+        for chunk in iter(lambda: proc.stdout.read1(65536), b""):
+            out.write(chunk); out.flush()
+    threading.Thread(target=run, daemon=True).start()
+    return proc
 
 def strace_source(cmd):
     """Start cmd under strace -f and stream its events. strace writes to a FIFO so the traced program keeps its own
@@ -85,7 +96,7 @@ def strace_source(cmd):
     if not shutil.which("strace"): raise SystemExit("strace not found: sudo apt install strace")
     tmp = tempfile.mkdtemp(prefix="hids_"); fifo = os.path.join(tmp, "events")
     os.mkfifo(fifo)
-    proc = subprocess.Popen(["strace", "-f", "-q", "-e", "signal=none", "-s", "0", "-o", fifo, "--", *cmd], **DETACHED)
+    proc = _relay(subprocess.Popen(["strace", "-f", "-q", "-e", "signal=none", "-s", "0", "-o", fifo, "--", *cmd], **DETACHED))
     try:
         parse = StraceParser()
         with open(fifo, "r", errors="replace") as fh:
@@ -113,8 +124,8 @@ def _gated(cmd, user=None):
     # the read end keeps its own number in the child (pass_fds); close_fds would undo a dup2 done in preexec_fn
     # exec -a keeps argv[0] as typed ("bash", not "/usr/bin/bash"), exactly as strace and a shell would start it:
     # bash searches PATH for itself only when argv[0] has no "/", so the startup calls differ otherwise
-    p = subprocess.Popen(["/bin/bash", "-c", f'read -r _ <&{r}; exec {r}<&-; exec -a "$0" "$@"', cmd[0], exe, *cmd[1:]],
-                         pass_fds=(r,), **DETACHED, **kw)
+    p = _relay(subprocess.Popen(["/bin/bash", "-c", f'read -r _ <&{r}; exec {r}<&-; exec -a "$0" "$@"', cmd[0], exe, *cmd[1:]],
+                                pass_fds=(r,), **DETACHED, **kw))
     os.close(r)
     def release():
         os.write(w, b"go\n"); os.close(w)

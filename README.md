@@ -113,10 +113,14 @@ Every row: 40 held-out normal runs and 40 attack runs (10 per payload), 99th-per
   *every* normal run: AUC 0.378 is worse than chance. Fourteen years of glibc and kernel changes alter normal
   behaviour more than the attacks do.
 * **It must also see the program in the same environment.** Run from an interactive terminal, the same script makes
-  extra job-control calls (`getpgrp`, `ioctl`) at startup; under `sudo`, PATH is replaced and bash's command lookup
+  extra job-control calls (`getpgrp`, `ioctl`) at startup, and bash's `checkwinsize` (on by default since bash 5)
+  asks the terminal for its size after every external command (`ioctl TIOCGWINSZ`, then `LINES`/`COLUMNS` updates):
+  this only happens with a real, non-zero window size, which is why it showed up when the monitor was run directly
+  from a terminal and not through a script or a test harness; under `sudo`, PATH is replaced and bash's command lookup
   changes; started as `/usr/bin/bash` instead of `bash`, bash searches PATH for itself differently; even launching the
   script from another working directory changes its trace. Each of these alone raised false alarms on normal runs.
-  The monitor therefore always starts the watched program like a service (own session, no controlling terminal, stdin from `/dev/null`) and keeps the user's PATH.
+  The monitor therefore always starts the watched program like a service (own session, no controlling terminal,
+  stdin from `/dev/null`, stdout/stderr into a pipe that the monitor relays to the screen) and keeps the user's PATH.
   After that, 5 normal runs × with/without a terminal raised 0 alerts.
 * **Train with the capture mechanism you detect with (observer effect).** ptrace stops the program at every call,
   which fixes the order of events such as a child's exit, bash's `wait4` and the SIGCHLD handler (`rt_sigreturn`):
@@ -219,6 +223,11 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
 ---
 
 ## 5. Limitations
+* **The 10% margin does not cover every occurrence of the rare timing ordering.** That ordering
+  (`… wait4 wait4 rt_sigreturn`: the SIGCHLD handler runs after bash's second `wait4`) is in 4 of 100 strace training
+  runs and scores differently each time: 0.211 in calibration, **0.238** in a later live run, just above the 0.232
+  kill threshold, which killed a normal run. The signal handler's position in the trace is timing noise (signal
+  delivery is asynchronous), but the model treats it as sequence information.
 * **The kill threshold needed a margin, chosen after seeing results.** The rare child-reaping ordering scores a fixed
   value (0.2110 for the strace model): it is the highest calibration score, so the bare `live_max` *equals* it, and a
   normal run reproducing it tied the threshold and was killed (1 of 8). A 10% margin fixed this on every run tried,
