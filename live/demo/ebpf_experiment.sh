@@ -22,7 +22,7 @@ BACKEND=ebpf RESUME=$RESUME bash live/demo/collect.sh "${NTRAIN:-300}" "${NCAL:-
 
 echo; echo "== 2. training on eBPF recordings ($(date +%T))"
 python3 live/train.py --traces live/recordings_ebpf/normal_train --calib live/recordings_ebpf/normal_calib \
-        --numbering x86_64 --out $M/host_ebpf.npz 2>&1 | grep -v "held-out"
+        --numbering x86_64 --ignore rt_sigreturn --out $M/host_ebpf.npz 2>&1 | grep -v "held-out"
 
 echo; echo "== 3a. eBPF-trained model, eBPF-recorded test runs"
 python3 live/evaluate.py --model $M/host_ebpf.npz --normal live/recordings_ebpf/normal_test --attack live/recordings_ebpf/attack --tag ebpf

@@ -164,8 +164,10 @@ def main():
             elif t.stale: ident(t)
             if a.record: t.raw.append(nr)
             if det:
-                t.calls.append(convert([nr], det.numbering)[0]); t.n += 1
-                if t.n >= L and (t.n - L) % S == 0: pending.append((t, list(t.calls)))
+                c = convert([nr], det.numbering)[0]
+                if c not in det.ignore:                       # e.g. rt_sigreturn: asynchronous, position is timing noise
+                    t.calls.append(c); t.n += 1
+                    if t.n >= L and (t.n - L) % S == 0: pending.append((t, list(t.calls)))
                 if len(pending) >= a.batch or (pending and time.perf_counter() - last_flush > 0.05):
                     flush(); last_flush = time.perf_counter()
     except KeyboardInterrupt:

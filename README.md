@@ -100,13 +100,14 @@ training.
 
 Every row: 40 held-out normal runs and 40 attack runs (10 per payload), 99th-percentile threshold (the default),
 95th in brackets where it differs. eBPF models: 300 training + 300 calibration runs; strace models: 100 + 100.
+Host models ignore `rt_sigreturn` (see "signal-handler returns" below); *before* = without that change.
 
-| Model trained on | Test runs captured with | AUC | Precision | Recall | F1 | False alarm rate |
+| Model trained on | Test runs captured with | AUC | Precision | Recall | F1 | False alarm rate (alerts) |
 |---|---|---|---|---|---|---|
 | this host, **eBPF** | **eBPF** | 1.000 | 0.976 | 1.000 | **0.988** | **0.025** |
 | this host, strace | strace | 1.000 | 0.976 | 1.000 | **0.988** | **0.025** |
-| this host, strace | eBPF | 0.983 | 0.541 | 1.000 | 0.702 | **0.850** |
-| this host, eBPF | strace | 1.000 | 0.784 | 1.000 | 0.879 | 0.275 |
+| this host, strace | eBPF | 0.994 | 0.500 | 1.000 | 0.667 | **1.000** (*before* 0.850) |
+| this host, eBPF | strace | 1.000 | 0.500 | 1.000 | 0.667 | 1.000 (*before* 0.275) |
 | ADFA-LD | strace | 0.378 | 0.500 | 1.000 | 0.667 | **1.000** |
 
 * **A model must be trained on the host it protects.** The ADFA-LD model, even with the syscall translation, flags
@@ -121,34 +122,49 @@ Every row: 40 held-out normal runs and 40 attack runs (10 per payload), 99th-per
   script from another working directory changes its trace. Each of these alone raised false alarms on normal runs.
   The monitor therefore always starts the watched program like a service (own session, no controlling terminal,
   stdin from `/dev/null`, stdout/stderr into a pipe that the monitor relays to the screen) and keeps the user's PATH.
-  After that, 5 normal runs × with/without a terminal raised 0 alerts.
+  After that, normal runs with and without a real terminal raised 0 alerts (see the live checks below).
 * **Train with the capture mechanism you detect with (observer effect).** ptrace stops the program at every call,
   which fixes the order of events such as a child's exit, bash's `wait4` and the SIGCHLD handler (`rt_sigreturn`):
   in 100 strace-recorded runs `wait4 → rt_sigreturn` appears 2,012 times and the reverse order never. Under eBPF the
   program runs at full speed and other orderings appear, so a strace-trained model raised false alarms on normal
   eBPF-monitored runs even after the launch was matched exactly. Measured (table above): the strace-trained model
-  flags **34 of 40** normal eBPF-captured runs, the eBPF-trained model **1 of 40**. Its AUC stays 0.983, so the
-  attacks still stand out; what breaks is the threshold, calibrated on strace timing. Under eBPF, 5 of 280 runs
+  alerts on **every** normal eBPF-captured run (34 of 40 before signal returns were dropped), the eBPF-trained model
+  on **1 of 40**. AUC stays 0.994, so attacks still stand out; what breaks is the threshold, calibrated on strace
+  timing. Dropping `rt_sigreturn` made each backend's normal runs *more uniform*, so the two backends now differ
+  more clearly, not less: the timing difference lies in more than where the signal handler returns. Under eBPF, 5 of 280 runs
   even contain one extra short-lived bash subshell that never appears when the same seed runs under strace.
   `live/demo/ebpf_experiment.sh` reproduces all of this.
+* **Signal-handler returns are ignored (decided after seeing results).** `rt_sigreturn` is the call a signal handler
+  makes when it returns. Signals arrive asynchronously, so where that call lands in a trace depends on timing, not on
+  what the program does: bash's SIGCHLD handler runs either before or after bash's own `wait4`. That rare ordering
+  (`… wait4 wait4 rt_sigreturn`, in 4 of 100 strace training runs) caused the last false kills: 0.211 vs a 0.211 kill
+  threshold, later 0.238 vs 0.232. The host models now drop `rt_sigreturn` from every trace before training,
+  calibration and detection (`train.py --ignore rt_sigreturn`, stored in the model so the monitor applies it too).
+  The strace model's highest normal calibration score fell from 0.211 to 0.181, close to its 99th percentile (0.170):
+  the outlier was that ordering. The eBPF model's calibration maximum (0.249) comes from one unusual run (the other
+  299 are at most 0.172), so its kill threshold is set by a single outlier.
 * Live checks with the eBPF model (`ebpf_experiment.sh`, step 4, 300-run model, single threshold): **5 of 5** normal
   runs on unseen seeds raised no alert. Recon was detected and killed on its own payload (`id`, then `whoami` and the
   SUID-scanning `find`). The reverse-shell run was killed at call 318 of bash, **0.167 against a 0.166 threshold**, on
   a child-reaping window *before* the payload ran: a false alarm that happened to hit an attack run, not a detection.
 * **Alert vs kill thresholds** (offline, same 40 + 40 test runs; "killed" = score above the kill threshold):
 
-  | Model | Test runs | Normal runs alerted | Killed at `live_max` | **Killed at `live_max` + 10%** | Attacks killed (+10%) |
-  |---|---|---|---|---|---|
-  | eBPF-trained | eBPF | 1 / 40 | 0 / 40 | **0 / 40** | **40 / 40** |
-  | strace-trained | strace | 1 / 40 | 0 / 40 | **0 / 40** | **40 / 40** |
-  | strace-trained | eBPF | 34 / 40 | 15 / 40 | 6 / 40 | 40 / 40 |
-  | eBPF-trained | strace | 11 / 40 | 0 / 40 | 0 / 40 | 40 / 40 |
+  | Model | Test runs | Normal runs alerted | **Normal runs killed** | **Attacks killed** |
+  |---|---|---|---|---|
+  | eBPF-trained | eBPF | 1 / 40 | **0 / 40** | **40 / 40** |
+  | strace-trained | strace | 1 / 40 | **0 / 40** | **40 / 40** |
+  | strace-trained | eBPF | 40 / 40 | 22 / 40 | 40 / 40 |
+  | eBPF-trained | strace | 40 / 40 | 0 / 40 | 40 / 40 |
 
-  Live, strace backend, `--respond kill`, kill threshold `live_max` + 10% (0.232): **10 of 10** normal runs raised no
-  alert and nothing was killed (including 3 runs of seed 5005, which the bare `live_max` had killed once). Every
-  attack was stopped *during its payload*: recon at `id`, adduser at bash after the passwd copy, the reverse shell at
-  bash's `connect … dup2` and the shell it spawned, exfil at `tar`. Before the margin (bare `live_max`): 7 of 8
-  normal runs clean, 1 killed on a tie (0.211 vs 0.211).
+  Kill threshold: `live_max` + 10% (0.199 strace model, 0.274 eBPF model). Before signal returns were dropped, the
+  matched rows were also 0 / 40 normal runs killed and 40 / 40 attacks killed; the cross rows were 6 / 40 and 0 / 40.
+
+  **Live, strace backend, `--respond kill`, final models: 12 of 12 normal runs raised no alert and nothing was killed**
+  (6 seeds, each with and without a real terminal, including seed 5003, which had been killed before). Every attack
+  was stopped *during its payload*: recon at `id`, adduser at bash after the passwd copy, the reverse shell at bash's
+  `connect … dup2` and the shell it spawned, exfil at `tar` and `cat`. False kills fixed on the way: bare `live_max`,
+  1 of 8 normal runs killed (tie, 0.211 vs 0.211); +10% margin, 1 of 6 (rare signal ordering, 0.238 vs 0.232);
+  +10% margin with `rt_sigreturn` ignored, 0 of 12.
 * In the first attempt, thresholds came from 20 calibration runs, so the "99th percentile" was simply the largest
   of 20 values. That gave a false alarm rate of 0.10 on the test runs. A separate set of 100 calibration runs was then
   added. This change was made after seeing test numbers, so it is reported here. The dataset was recorded again after
@@ -188,7 +204,7 @@ sudo apt install strace gcc bpftrace                                          # 
 python3 live/tests/test_live.py                                               # offline tests (parsers, mapping)
 bash live/demo/collect.sh                                                     # record normal + attack runs (~3 min)
 python3 live/train.py --traces live/recordings/normal_train --calib live/recordings/normal_calib \
-        --numbering x86_64 --out live/models/host.npz
+        --numbering x86_64 --ignore rt_sigreturn --out live/models/host.npz
 python3 live/evaluate.py --model live/models/host.npz --normal live/recordings/normal_test \
         --attack live/recordings/attack --tag strace
 
@@ -223,11 +239,10 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
 ---
 
 ## 5. Limitations
-* **The 10% margin does not cover every occurrence of the rare timing ordering.** That ordering
-  (`… wait4 wait4 rt_sigreturn`: the SIGCHLD handler runs after bash's second `wait4`) is in 4 of 100 strace training
-  runs and scores differently each time: 0.211 in calibration, **0.238** in a later live run, just above the 0.232
-  kill threshold, which killed a normal run. The signal handler's position in the trace is timing noise (signal
-  delivery is asynchronous), but the model treats it as sequence information.
+* **Ignoring `rt_sigreturn` was decided after seeing results**, like the two thresholds and the margin. It removes one
+  known source of timing noise; other asynchronous effects (scheduling, when a child exits) still shape traces. It is
+  also a trade-off for security: `rt_sigreturn` is the call that sigreturn-oriented programming (SROP) exploits abuse,
+  and the model no longer sees it at all.
 * **The kill threshold needed a margin, chosen after seeing results.** The rare child-reaping ordering scores a fixed
   value (0.2110 for the strace model): it is the highest calibration score, so the bare `live_max` *equals* it, and a
   normal run reproducing it tied the threshold and was killed (1 of 8). A 10% margin fixed this on every run tried,

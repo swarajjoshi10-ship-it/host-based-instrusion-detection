@@ -9,11 +9,11 @@ host.npz,strace,live_p95,40,40,1.0,0.9756,1.0,0.9877,0.025
 host.npz,strace,live_p99,40,40,1.0,0.9756,1.0,0.9877,0.025
 host.npz,strace,live_max,40,40,1.0,1.0,1.0,1.0,0.0
 host.npz,strace,respond,40,40,1.0,1.0,1.0,1.0,0.0
-host.npz,ebpf_recordings,live_p95,40,40,0.9825,0.5405,1.0,0.7018,0.85
-host.npz,ebpf_recordings,live_p99,40,40,0.9825,0.5405,1.0,0.7018,0.85
-host.npz,ebpf_recordings,live_max,40,40,0.9825,0.7273,1.0,0.8421,0.375
-host.npz,ebpf_recordings,respond,40,40,0.9825,0.8696,1.0,0.9302,0.15
-host_ebpf.npz,strace_recordings,live_p95,40,40,1.0,0.7843,1.0,0.8791,0.275
-host_ebpf.npz,strace_recordings,live_p99,40,40,1.0,0.7843,1.0,0.8791,0.275
+host.npz,ebpf_recordings,live_p95,40,40,0.9938,0.5,1.0,0.6667,1.0
+host.npz,ebpf_recordings,live_p99,40,40,0.9938,0.5,1.0,0.6667,1.0
+host.npz,ebpf_recordings,live_max,40,40,0.9938,0.5,1.0,0.6667,1.0
+host.npz,ebpf_recordings,respond,40,40,0.9938,0.6452,1.0,0.7843,0.55
+host_ebpf.npz,strace_recordings,live_p95,40,40,1.0,0.5,1.0,0.6667,1.0
+host_ebpf.npz,strace_recordings,live_p99,40,40,1.0,0.5,1.0,0.6667,1.0
 host_ebpf.npz,strace_recordings,live_max,40,40,1.0,1.0,1.0,1.0,0.0
 host_ebpf.npz,strace_recordings,respond,40,40,1.0,1.0,1.0,1.0,0.0

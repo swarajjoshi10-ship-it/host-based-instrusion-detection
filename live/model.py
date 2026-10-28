@@ -36,6 +36,7 @@ class Detector:
         self.vocab = {c: k for k, c in enumerate(meta["vocab"])}; self.V = len(self.vocab); self.PAD = self.V + 1
         self.L, self.S, self.numbering = meta["L"], meta["S"], meta["numbering"]
         self.thresholds, self.min_windows = meta["thresholds"], meta["min_windows"]
+        self.ignore = set(meta.get("ignore", []))             # calls dropped before scoring (model numbering)
         self.arrays = arrays
         g = lambda k: arrays[k].astype(np.float32)
         self.emb, self.Wih, self.Whh = g("emb.weight"), g("lstm.weight_ih_l0"), g("lstm.weight_hh_l0")
@@ -70,8 +71,11 @@ class Detector:
         mask = (X[:, 1:] != self.PAD).astype(np.float32)
         return (nll * mask).sum(1) / np.maximum(mask.sum(1), 1)
 
+    def keep(self, seq):
+        return [c for c in seq if c not in self.ignore]
+
     def trace_scores(self, seq):
-        return self.score_windows(windows(seq, self.L, self.S))
+        return self.score_windows(windows(self.keep(seq), self.L, self.S))
 
     def oov_rate(self, seq):
         return sum(c not in self.vocab for c in seq) / max(len(seq), 1)
@@ -88,13 +92,17 @@ def read_runs(folders):
                 if seq: runs.setdefault(os.path.join(dp, fn.split("_")[0]), []).append(seq)
     return runs
 
-def fit(train_runs, calib_runs, numbering, L=20, hidden=64, seed=0, min_windows=5, source=""):
+def fit(train_runs, calib_runs, numbering, L=20, hidden=64, seed=0, min_windows=5, source="", ignore=()):
+    """ignore: system call numbers removed from every trace before training, calibration and detection"""
     import torch
     sys.path.insert(0, ROOT)
     from phase6b_improve import encode, train_lstm, window_nll
     torch.set_num_threads(4)
     S = max(L // 2, 1)
     random.seed(seed); np.random.seed(seed)
+    drop = set(ignore)
+    strip = lambda runs: [[x for x in ([c for c in t if c not in drop] for t in r) if x] for r in runs]
+    train_runs, calib_runs = strip(train_runs), strip(calib_runs)
     train_traces = [t for r in train_runs for t in r]
     vocab = sorted({c for t in train_traces for c in t}); V = len(vocab); vmap = {c: k for k, c in enumerate(vocab)}
     Xtr, _ = encode(train_traces, vmap, V, L, S)
@@ -105,6 +113,7 @@ def fit(train_runs, calib_runs, numbering, L=20, hidden=64, seed=0, min_windows=
 
     arrays = {k: v.numpy() for k, v in model.state_dict().items()}
     meta = dict(vocab=vocab, L=L, S=S, hidden=hidden, numbering=numbering, min_windows=min_windows, thresholds={},
+                ignore=sorted(drop),
                 n_train_runs=len(train_runs), n_train_traces=len(train_traces), n_calib_runs=len(calib_runs),
                 epochs=epochs, train_s=round(train_s, 1), source=source, params=sum(p.numel() for p in model.parameters()))
     det = Detector(arrays, meta)
