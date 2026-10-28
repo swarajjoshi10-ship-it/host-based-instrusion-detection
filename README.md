@@ -105,6 +105,12 @@ training.
   script from another working directory changes its trace. Each of these alone raised false alarms on normal runs. The monitor therefore always starts the watched
   program like a service (own session, no controlling terminal, stdin from `/dev/null`) and keeps the user's PATH.
   After that, 5 normal runs × with/without a terminal raised 0 alerts.
+* **Train with the capture mechanism you detect with (observer effect).** ptrace stops the program at every call,
+  which fixes the order of events such as a child's exit, bash's `wait4` and the SIGCHLD handler (`rt_sigreturn`):
+  in 100 strace-recorded runs `wait4 → rt_sigreturn` appears 2,012 times and the reverse order never. Under eBPF the
+  program runs at full speed and other orderings appear, so a strace-trained model raised false alarms on normal
+  eBPF-monitored runs even after the launch was matched exactly. `live/demo/ebpf_experiment.sh` records the dataset
+  through eBPF, trains on it, and measures both models on both kinds of recordings.
 * Live, with `--respond kill`: the reverse shell's bash is flagged on the window containing
   `read socket connect fcntl … dup2` and killed, together with the shell it spawned.
 * In the first attempt, thresholds came from 20 calibration runs, so the "99th percentile" was simply the largest
@@ -157,6 +163,8 @@ ATTACK=revshell python3 live/monitor.py --model live/models/host.npz --respond k
 # eBPF backend (root): same command, kernel-side capture; or a running process tree / the whole host
 ATTACK=revshell sudo -E env "PATH=$PATH" python3 live/monitor.py --backend ebpf --model live/models/host.npz --respond kill -- bash live/demo/service.sh 7
 sudo -E env "PATH=$PATH" python3 live/monitor.py --backend ebpf --model live/models/host.npz --pid <PID>
+
+sudo -E env "PATH=$PATH" bash live/demo/ebpf_experiment.sh   # eBPF dataset, model, cross-backend evaluation, live checks
 
 python3 live/bench/overhead.py                    # strace overhead
 sudo -E python3 live/bench/overhead.py --ebpf     # adds the eBPF columns

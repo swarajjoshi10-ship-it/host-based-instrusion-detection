@@ -7,3 +7,4 @@ LID-DS/
 live/models/
 live/recordings/
 live/logs/
+live/recordings_ebpf/
