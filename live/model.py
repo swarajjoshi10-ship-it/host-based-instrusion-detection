@@ -31,6 +31,7 @@ class Detector:
         self.vocab = {c: k for k, c in enumerate(meta["vocab"])}; self.V = len(self.vocab); self.PAD = self.V + 1
         self.L, self.S, self.numbering = meta["L"], meta["S"], meta["numbering"]
         self.thresholds, self.min_windows = meta["thresholds"], meta["min_windows"]
+        self.arrays = arrays
         g = lambda k: arrays[k].astype(np.float32)
         self.emb, self.Wih, self.Whh = g("emb.weight"), g("lstm.weight_ih_l0"), g("lstm.weight_hh_l0")
         self.b = g("lstm.bias_ih_l0") + g("lstm.bias_hh_l0"); self.Wout, self.bout = g("out.weight"), g("out.bias")
@@ -110,18 +111,28 @@ def fit(train_runs, calib_runs, numbering, L=20, hidden=64, seed=0, min_windows=
     print(f"[check] numpy vs PyTorch window scores on {len(probe)} windows: max difference {diff:.2e}")
     assert diff < 1e-3, "numpy LSTM disagrees with PyTorch"
 
-    task_final, task_live, run_final, run_live = [], [], [], []
+    calibrate(det, calib_runs)
+    return arrays, meta
+
+def calibrate(det, calib_runs):
+    """Thresholds from normal runs only, stored in det.meta["thresholds"].
+    live_p95 / live_p99: alert thresholds for the live rule (~5% / ~1% of normal runs raise an alert).
+    live_max: the highest live score of any calibration run, the threshold for acting (stop/kill). Alerting is cheap,
+    so it may fire on ~1% of normal runs; killing a healthy program is not, so it requires a score above anything
+    normal behaviour produced during calibration."""
+    task_final, run_final, run_live = [], [], []
     for r in calib_runs:
         ws = [det.trace_scores(t) for t in r]
-        f = [float(w.mean()) for w in ws]; l = [live_stat(w, min_windows) for w in ws]
-        task_final += f; task_live += l; run_final.append(max(f)); run_live.append(max(l))
+        f = [float(w.mean()) for w in ws]
+        task_final += f; run_final.append(max(f)); run_live.append(max(live_stat(w, det.min_windows) for w in ws))
     pct = lambda v, p: float(np.percentile(v, p))
-    meta["thresholds"] = {"live_p95": pct(run_live, 95), "live_p99": pct(run_live, 99),
-                          "run_p95": pct(run_final, 95), "run_p99": pct(run_final, 99),
-                          "trace_p95": pct(task_final, 95), "trace_p99": pct(task_final, 99)}
+    det.meta["thresholds"] = det.thresholds = {
+        "live_p95": pct(run_live, 95), "live_p99": pct(run_live, 99), "live_max": float(max(run_live)),
+        "run_p95": pct(run_final, 95), "run_p99": pct(run_final, 99),
+        "trace_p95": pct(task_final, 95), "trace_p99": pct(task_final, 99)}
+    det.meta["n_calib_runs"] = len(calib_runs)
     print(f"[calibrate] {len(calib_runs)} normal runs / {len(task_final)} traces -> thresholds "
-          + ", ".join(f"{k} {v:.3f}" for k, v in meta["thresholds"].items()))
-    return arrays, meta
+          + ", ".join(f"{k} {v:.3f}" for k, v in det.thresholds.items()))
 
 def save(path, arrays, meta):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)

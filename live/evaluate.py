@@ -35,7 +35,7 @@ print(f"unknown-call rate: normal {np.mean([r[3] for r in rows if r[1] == 0]):.3
 auc = roc_auc_score(y, sc) if 0 < y.sum() < len(y) else float("nan")
 print(f"AUC {auc:.3f}")
 summary = []
-for name in ("live_p95", "live_p99"):
+for name in [n for n in ("live_p95", "live_p99", "live_max") if n in det.thresholds]:   # live_max = response (stop/kill) threshold
     thr = det.thresholds[name]; pred = sc > thr
     tp = int((pred & (y == 1)).sum()); fp = int((pred & (y == 0)).sum()); fn = int((~pred & (y == 1)).sum()); tn = int((~pred & (y == 0)).sum())
     p = tp / max(tp + fp, 1); r = tp / max(tp + fn, 1); f1 = 2 * p * r / max(p + r, 1e-12); far = fp / max(fp + tn, 1)

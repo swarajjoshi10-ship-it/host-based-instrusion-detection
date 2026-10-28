@@ -23,12 +23,13 @@ from syscalls import convert, name_of
 
 
 class Task:
-    __slots__ = ("tid", "tgid", "comm", "calls", "raw", "n", "nwin", "sum", "worst", "worst_win", "alerted", "stale")
+    __slots__ = ("tid", "tgid", "comm", "calls", "raw", "n", "nwin", "sum", "worst", "worst_win", "alerted", "responded",
+                 "stale")
     def __init__(self, tid, L):
         self.tid, self.tgid, self.comm = tid, None, None
         self.calls = deque(maxlen=L); self.raw = []           # model-numbered window / full x86_64 trace (record)
         self.n = self.nwin = 0; self.sum = 0.0; self.worst = -1.0; self.worst_win = None
-        self.alerted = False; self.stale = True
+        self.alerted = self.responded = False; self.stale = True
     @property
     def mean(self): return self.sum / self.nwin if self.nwin else 0.0
 
@@ -36,7 +37,9 @@ def main():
     ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__)
     ap.add_argument("--backend", choices=["ebpf", "strace", "replay"], default="strace")
     ap.add_argument("--model", help="detector saved by train.py (omit to only --record)")
-    ap.add_argument("--threshold", default="live_p99", help="live_p99 | live_p95 (calibrated for this live rule) or a number")
+    ap.add_argument("--threshold", default="live_p99", help="alert threshold: live_p99 | live_p95 (calibrated for this live rule) or a number")
+    ap.add_argument("--respond_threshold", default="live_max",
+                    help="stop/kill only above this: live_max (highest normal calibration score) | live_p99 | a number")
     ap.add_argument("--min_windows", type=int, help="windows a task must produce before it can be flagged while running (default: the model's)")
     ap.add_argument("--batch", type=int, default=16, help="windows scored together: larger = less CPU, later alerts")
     ap.add_argument("--respond", choices=["none", "stop", "kill"], default="none", help="strace: SIGSTOP/SIGKILL the flagged process; ebpf: freeze/kill the watched cgroup")
@@ -53,13 +56,19 @@ def main():
     cmd = a.cmd[1:] if a.cmd[:1] == ["--"] else a.cmd
     if not a.model and not a.record: ap.error("give --model (detect) and/or --record (collect traces)")
 
-    det = None; L = 20; S = 10; thr = None
+    det = None; L = 20; S = 10; thr = rthr = None
     if a.model:
         from model import Detector                           # torch import only when detecting
         det = Detector.load(a.model); L, S = det.L, det.S
-        thr = det.thresholds[a.threshold] if a.threshold in det.thresholds else float(a.threshold)
+        pick = lambda name: det.thresholds[name] if name in det.thresholds else float(name)
+        thr = pick(a.threshold)
         if a.min_windows is None: a.min_windows = det.min_windows
-        print(f"[hids] model {a.model}: numbering {det.numbering}, window {L}/{S}, threshold {a.threshold} = {thr:.3f}", flush=True)
+        print(f"[hids] model {a.model}: numbering {det.numbering}, window {L}/{S}, alert threshold {a.threshold} = {thr:.3f}", flush=True)
+        if a.respond != "none":
+            if a.respond_threshold not in det.thresholds and not a.respond_threshold.replace(".", "", 1).isdigit():
+                ap.error(f"model has no {a.respond_threshold} threshold: python3 live/recalibrate.py --model {a.model} --calib <normal runs>")
+            rthr = max(pick(a.respond_threshold), thr)
+            print(f"[hids] response {a.respond} only above {a.respond_threshold} = {rthr:.3f}", flush=True)
 
     if a.backend == "strace":
         if not cmd: ap.error("strace backend needs a command after --")
@@ -73,7 +82,7 @@ def main():
 
     tasks, done, alerts = {}, [], []
     pending = []                                              # (task, window) waiting to be scored in one batch
-    stats = dict(events=0, windows=0, score_s=0.0, lost=0)
+    stats = dict(events=0, windows=0, score_s=0.0, lost=0, responses=0)
     os.makedirs(os.path.dirname(a.log), exist_ok=True); logf = open(a.log, "a")
     if a.record: os.makedirs(a.record, exist_ok=True)
 
@@ -88,19 +97,26 @@ def main():
         top = [name_of(c, det.numbering) for c in (t.worst_win or [])]
         rec = dict(time=time.strftime("%H:%M:%S"), tid=t.tid, pid=t.tgid, comm=t.comm, score=round(t.mean, 3),
                    threshold=round(thr, 3), windows=t.nwin, calls=t.n, when=when, worst_window=top, response=a.respond)
-        act = ""
-        if when == "running" and a.respond != "none":
-            if a.backend == "ebpf":                           # event pids are kernel-global: act on the cgroup
-                try: act = " -> " + src.respond(a.respond)
-                except OSError as e: act = f" -> {a.respond} failed: {e}"
-            elif t.tgid and t.tgid != os.getpid():
-                sig = signal.SIGSTOP if a.respond == "stop" else signal.SIGKILL
-                try: os.kill(t.tgid, sig); act = f" -> sent {sig.name} to pid {t.tgid}"
-                except OSError as e: act = f" -> {a.respond} failed: {e}"
-            rec["response_result"] = act.strip(" ->")
         print(f"\n[ALERT {rec['time']}] {t.comm or '?'} (pid {t.tgid}, tid {t.tid}) mean score {t.mean:.3f} > {thr:.3f} "
-              f"after {t.nwin} windows / {t.n} calls ({when}){act}\n          most anomalous window: {' '.join(top)}", flush=True)
+              f"after {t.nwin} windows / {t.n} calls ({when})\n          most anomalous window: {' '.join(top)}", flush=True)
         logf.write(json.dumps(rec) + "\n"); logf.flush(); alerts.append(rec)
+
+    def respond(t):
+        """act only on a running task whose score is above anything normal calibration runs produced"""
+        t.responded = True
+        if a.backend == "ebpf":                               # event pids are kernel-global: act on the cgroup
+            try: act = src.respond(a.respond)
+            except OSError as e: act = f"{a.respond} failed: {e}"
+        elif t.tgid and t.tgid != os.getpid():
+            sig = signal.SIGSTOP if a.respond == "stop" else signal.SIGKILL
+            try: os.kill(t.tgid, sig); act = f"sent {sig.name} to pid {t.tgid}"
+            except OSError as e: act = f"{a.respond} failed: {e}"
+        else: return
+        print(f"[RESPONSE {time.strftime('%H:%M:%S')}] {t.comm or '?'} (pid {t.tgid}) score {t.mean:.3f} > {rthr:.3f}: {act}",
+              flush=True)
+        logf.write(json.dumps(dict(time=time.strftime("%H:%M:%S"), tid=t.tid, pid=t.tgid, comm=t.comm, score=round(t.mean, 3),
+                                   respond_threshold=round(rthr, 3), response=a.respond, result=act)) + "\n"); logf.flush()
+        stats["responses"] += 1
 
     def flush():
         if not pending: return
@@ -109,7 +125,9 @@ def main():
         for (t, w), s in zip(pending, sc):                     # in arrival order: the rule is checked after every window
             t.nwin += 1; t.sum += float(s)
             if s > t.worst: t.worst, t.worst_win = float(s), w
-            if not t.alerted and t.nwin >= a.min_windows and t.mean > thr: alert(t, "running" if t.tid in tasks else "at exit")
+            if t.nwin >= a.min_windows:
+                if not t.alerted and t.mean > thr: alert(t, "running" if t.tid in tasks else "at exit")
+                if rthr is not None and not t.responded and t.tid in tasks and t.mean > rthr: respond(t)
         pending.clear()
 
     def finish(t):
@@ -165,7 +183,7 @@ def main():
           + (f", {stats['lost']} events LOST by the kernel buffer" if stats["lost"] else ""))
     if det:
         print(f"[hids] {stats['windows']} windows scored, {1000 * stats['score_s'] / max(stats['windows'], 1):.3f} ms/window; "
-              f"{len(alerts)} alert(s) -> {a.log}")
+              f"{len(alerts)} alert(s), {stats['responses']} response(s) -> {a.log}")
     print(f"[hids] monitor CPU {cpu:.2f} s ({100 * cpu / max(wall, 1e-9):.1f}% of one core), peak RSS "
           f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.1f} MB"
           + (f"; traces written to {a.record}" if a.record else ""), flush=True)
