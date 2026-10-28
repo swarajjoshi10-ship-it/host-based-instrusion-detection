@@ -14,7 +14,7 @@ Backends
           command it starts itself. Much slower, because every call costs two extra context switches.
   replay  re-reads a saved strace (-f) or bpftrace output file; used for tests.
 """
-import os, pwd, re, shutil, subprocess, tempfile, threading, time
+import os, pwd, re, shutil, signal, subprocess, tempfile, threading, time
 from syscalls import name_to_x64
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -127,6 +127,15 @@ def bpftrace_env():
     instead of slowing the program, so syscall bursts are lost; 1024 pages (4 MB per CPU) absorbs far more."""
     return dict(os.environ, BPFTRACE_PERF_RB_PAGES=os.environ.get("BPFTRACE_PERF_RB_PAGES", "1024"))
 
+def stop_tracer(tracer):
+    """bpftrace stops cleanly on SIGINT (Ctrl-C). bpftrace 0.14 sometimes ignores a stop request while idle, so it is
+    killed if it is still there 2 s later; the kernel detaches its probes when the process dies."""
+    if tracer.poll() is None:
+        tracer.send_signal(signal.SIGINT)
+        try: tracer.wait(timeout=2)
+        except subprocess.TimeoutExpired: tracer.kill()
+    tracer.wait()
+
 class Cgroup:
     """A cgroup v2 directory used as a container for the watched process tree."""
     ROOT = "/sys/fs/cgroup"
@@ -207,7 +216,7 @@ class EbpfSource:
             except OSError: done = True
             if done or self.jail.frozen():
                 time.sleep(0.3)                               # let bpftrace print the last events
-                tracer.terminate(); return
+                stop_tracer(tracer); return
             time.sleep(0.05)
 
     def __iter__(self):
@@ -235,7 +244,7 @@ class EbpfSource:
             if not ready:
                 raise SystemExit(f"bpftrace exited before attaching its probes (code {tracer.wait()}); see its error above")
         finally:
-            tracer.terminate(); tracer.wait()
+            stop_tracer(tracer)
             frozen = self.jail is not None and self.jail.frozen()
             if self.child is not None:
                 if not ready: self.child.kill()             # never let the program run unwatched
