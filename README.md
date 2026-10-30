@@ -11,6 +11,15 @@ The project has two parts:
 | **Live monitor** | `live/` | Captures system calls from the kernel (eBPF tracepoint or ptrace), scores them in real time with an LSTM, raises alerts, and can `SIGSTOP`/`SIGKILL` the offending process. Evaluated on a live host with real attack payloads and benchmarked for overhead. |
 | Offline study | `phases/`, `results/` | Compares Isolation Forest, One-Class SVM, an autoencoder and an LSTM next-call model on the ADFA-LD and LID-DS 2021 datasets (5 seeds, tuning/test split). The LSTM won and is the engine of the live monitor. |
 
+**Headline results** (WSL2 Ubuntu 22.04, kernel 6.6, 40 normal + 40 attack runs never seen in training):
+
+* **40 / 40 attacks killed, 0 / 40 normal runs killed**; AUC 1.000, F1 0.988, 1 / 40 normal runs raised an alert.
+* **eBPF adds no measurable slowdown** to ordinary programs (×0.88–×1.04); the ptrace backend costs ×7.7–×259.
+* In the offline study the **LSTM beat** Isolation Forest, One-Class SVM and an autoencoder on ADFA-LD (AUC 0.854).
+* A model trained on the public ADFA-LD dataset **fails on this host** (AUC 0.378): train on the host you protect.
+
+**Quick demo:** `bash live/demo/present.sh` runs a normal run and four attacks, step by step (see [Demo](#5-demo)).
+
 ---
 
 ## 1. The operating-system side
@@ -65,18 +74,21 @@ attacks score at least ~50% above `live_max`.
 
 ## 2. Live monitor architecture
 
-```
-  kernel                                 user space (live/monitor.py, one core, ~28 MB)
- ┌──────────────────────────────┐       ┌───────────────────────────────────────────────────────────────┐
- │ raw_syscalls:sys_enter ──eBPF──ring──▶ parse ─▶ per-task window (last 20 calls, step 10)               │
- │ filter: cgroup id; exit       │ buffer│            │                                                  │
- │        or                     │       │            ▼ batch of windows                                  │
- │ ptrace stops ───────── strace ──FIFO─▶ LSTM next-call model (numpy) ─▶ score = mean −log P(next call)  │
- └──────────────────────────────┘       │            │                                                  │
-                                        │            ▼ running mean per task > threshold?                │
-                                        │   ALERT (+ most anomalous window) ─▶ alerts.jsonl, SIGSTOP/KILL  │
-                                        └───────────────────────────────────────────────────────────────┘
-```
+![Architecture of the live HIDS](docs/figures/architecture.png)
+
+**Offline** (`live/train.py`): normal runs recorded with the same backend are cut into windows of 20 calls, an LSTM
+is trained on them, and two thresholds are calibrated on separate normal runs; everything goes into one `.npz` file.
+
+**Live** (`live/monitor.py`), following the numbers in the figure:
+
+1. The launcher creates a cgroup v2 group and starts the program inside it, held at a gate until the probes attach.
+2. Every process and thread the program creates inherits the cgroup inside the kernel.
+3. Each system call hits the `raw_syscalls:sys_enter` tracepoint, where the eBPF program keeps only calls from that cgroup.
+4. Events reach user space through a per-CPU ring buffer; the program never waits for the monitor.
+5. The monitor keeps the last 20 calls of every thread.
+6. The LSTM (numpy) scores each window: mean −log P(next call).
+7. The running mean per task is compared with the alert and kill thresholds.
+8. The response freezes or kills the whole cgroup (eBPF) or sends SIGSTOP/SIGKILL (strace); alerts go to `live/logs/alerts.jsonl`.
 
 * **Model**: LSTM next-call predictor (embedding 32, 64 hidden units, ~30 k parameters, 122 KB). Trained with PyTorch,
   but inference runs in plain numpy (checked against PyTorch to within 1e-6), so the monitor is **28 MB instead of
@@ -87,7 +99,43 @@ attacks score at least ~50% above `live_max`.
 
 ---
 
-## 3. Results on a live host
+## 3. Machine learning: choosing the detector
+
+The detector was chosen in an offline study (`phases/`, `phase6b_improve.py`) before the live monitor was built. All
+models learn from **normal data only**, so they can flag attacks never seen in training.
+
+* **Data:** ADFA-LD (833 normal training, 4,372 normal validation and 746 attack traces from 32-bit Ubuntu 11.04) and
+  LID-DS 2021 (Bruteforce_CWE-307). The vocabulary (150 calls) comes from normal training data only. Attack traces
+  and an equal number of normal validation traces are split into a tuning half and a test half; every setting was
+  chosen on the tuning half and the test half was used once. Results are the mean of 5 seeds.
+* **Features for the baselines:** each window of 20 calls becomes a 151-bin call histogram plus 256 hashed bigram
+  counts (407 features; 663 with hashed trigrams).
+* **Detectors:** Isolation Forest (100 trees), One-Class SVM (RBF, ν = 0.05), an autoencoder (407→64→16→64→407,
+  reconstruction error), and the LSTM next-call model (embedding 32, 64 units, Adam lr 2e-3, early stopping), which
+  reads the call sequence in order.
+
+| Detector (ADFA-LD, 95th-percentile threshold, 5 seeds) | AUC | Precision | Recall | F1 | False alarm rate |
+|---|---|---|---|---|---|
+| Isolation Forest | 0.668 | 0.804 | 0.207 | 0.329 | 0.050 |
+| One-Class SVM | 0.479 | 0.635 | 0.082 | 0.146 | 0.048 |
+| Autoencoder | 0.752 | 0.584 | 0.070 | 0.125 | 0.050 |
+| **LSTM next-call** | **0.828** | 0.865 | 0.276 | **0.417** | 0.042 |
+
+<p align="center"><img src="results/phase6/roc_curves.png" width="48%" alt="ROC curves"> <img src="docs/figures/ablation.png" width="48%" alt="LSTM ablation"></p>
+
+* **Tuning the LSTM** (right, tuning half): more units, a second layer or longer windows did not help (AUC
+  0.811–0.825). Adding 2,000 normal training traces did (0.822 → 0.859): more normal data mattered more than model
+  size. Of the scoring rules, the mean of all windows was best (0.859, against 0.804 for the top 10% and 0.771 for
+  the maximum), which is why the live monitor uses a running mean.
+* **Final result (test half):** AUC 0.854, F1 0.527 at a 5.4% false alarm rate with thresholds from normal data
+  only (the F1 goal of 0.90 was not met). LID-DS Bruteforce_CWE-307: AUC 1.000, F1 0.812.
+* **Why the LSTM went live:** best AUC, it uses call order, and it is small (29,841 parameters, ~0.03 ms per window).
+
+Full tables and commands: `results/final/README.md`.
+
+---
+
+## 4. Results on a live host
 
 Environment: WSL2 Ubuntu 22.04, kernel 6.6.87, x86_64. Every number below comes from `live/results/*.csv`.
 
@@ -109,6 +157,8 @@ Host models ignore `rt_sigreturn` (see "signal-handler returns" below); *before*
 | this host, strace | eBPF | 0.994 | 0.500 | 1.000 | 0.667 | **1.000** (*before* 0.850) |
 | this host, eBPF | strace | 1.000 | 0.500 | 1.000 | 0.667 | 1.000 (*before* 0.275) |
 | ADFA-LD | strace | 0.378 | 0.500 | 1.000 | 0.667 | **1.000** |
+
+<p align="center"><img src="docs/figures/scores.png" width="55%" alt="Run scores of normal and attack runs with the alert and kill thresholds"></p>
 
 * **A model must be trained on the host it protects.** The ADFA-LD model, even with the syscall translation, flags
   *every* normal run: AUC 0.378 is worse than chance. Fourteen years of glibc and kernel changes alter normal
@@ -184,6 +234,8 @@ Host models ignore `rt_sigreturn` (see "signal-handler returns" below); *before*
 | Report service ×10 (43 k calls, ~230 processes) | 0.361 s | 2.77 s (×7.7) | 3.64 s (×10.1) | 0.407 s (×1.13) | **0.316 s (×0.88)** |
 | gzip 32 MB (1.7 k calls, CPU bound) | 0.466 s | 0.58 s (×1.25) | 0.62 s (×1.32) | 0.494 s (×1.06) | **0.483 s (×1.04)** |
 
+<p align="center"><img src="docs/figures/overhead.png" width="55%" alt="Slowdown under each monitoring mode"></p>
+
 eBPF lost **0** events in every run (with the 4 MB-per-CPU ring buffer) and the monitor scored all of them:
 50,552 / 42,737 / 1,685 calls. The monitor process: 28 MB peak RSS, 0.05–0.39 s of CPU per workload,
 about 0.1 ms per scored window.
@@ -200,7 +252,35 @@ about 0.1 ms per scored window.
 
 ---
 
-## 4. How to run (Linux or WSL2)
+## 5. Demo
+
+`live/demo/present.sh` is a guided live demo. Each step prints a banner and the command, runs it, prints the points
+to explain, and waits for Enter (`r` reruns the step, `q` quits). It starts the attacker listener itself.
+
+```bash
+bash live/demo/present.sh              # full demo: asks for the sudo password once, before the eBPF steps
+bash live/demo/present.sh --no-ebpf    # strace steps only, no root
+bash live/demo/present.sh --auto       # no pauses (rehearsal)
+```
+
+| Step | Backend | What it shows |
+|---|---|---|
+| Normal run | strace | ~23 processes, all below the alert threshold, nothing killed although kill mode is on |
+| Reverse shell | strace | bash flagged on `socket connect … dup2` and killed with SIGKILL, with the shell it spawned |
+| Root user added | strace | bash killed after copying `/etc/passwd` |
+| Normal run | eBPF | in-kernel capture filtered by cgroup, 0 lost events, 0 alerts |
+| Exfiltration | eBPF | `tar`/`cat` flagged; one write to `cgroup.kill` kills the whole tree |
+| Reconnaissance | eBPF | `id`, `whoami` and the SUID scan flagged |
+| Behind the scenes | — | the whole eBPF program, the last alert from `alerts.jsonl`, the overhead table |
+
+Run it as your normal user from a terminal on the Linux host (in WSL2, inside the distro), not through `sudo`: the
+models learned the program in that environment, and a different PATH or user changes its system calls.
+
+<p align="center"><img src="docs/figures/term_normal.png" width="48%" alt="Normal run: all processes normal"> <img src="docs/figures/term_revshell.png" width="48%" alt="Reverse shell detected and killed"></p>
+
+---
+
+## 6. How to run (Linux or WSL2)
 
 ```bash
 pip3 install --user numpy scikit-learn psutil matplotlib
@@ -218,11 +298,12 @@ python3 live/evaluate.py --model live/models/host.npz --normal live/recordings/n
 python3 live/demo/listener.py &
 ATTACK=revshell python3 live/monitor.py --model live/models/host.npz --respond kill -- bash live/demo/service.sh 7
 
-# eBPF backend (root): same command, kernel-side capture; or a running process tree / the whole host
-ATTACK=revshell sudo -E env "PATH=$PATH" python3 live/monitor.py --backend ebpf --model live/models/host.npz --respond kill -- bash live/demo/service.sh 7
-sudo -E env "PATH=$PATH" python3 live/monitor.py --backend ebpf --model live/models/host.npz --pid <PID>
-
+# eBPF backend (root): kernel-side capture, with the model trained on eBPF recordings (built by ebpf_experiment.sh)
 sudo -E env "PATH=$PATH" bash live/demo/ebpf_experiment.sh   # eBPF dataset, model, cross-backend evaluation, live checks
+ATTACK=revshell sudo -E env "PATH=$PATH" python3 live/monitor.py --backend ebpf --model live/models/host_ebpf.npz --respond kill -- bash live/demo/service.sh 7
+sudo -E env "PATH=$PATH" python3 live/monitor.py --backend ebpf --model live/models/host_ebpf.npz --pid <PID>   # a running process tree
+
+bash live/demo/present.sh                        # guided demo (section 5)
 
 python3 live/bench/overhead.py                    # strace overhead
 sudo -E python3 live/bench/overhead.py --ebpf     # adds the eBPF columns
@@ -247,7 +328,28 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
 
 ---
 
-## 5. Limitations
+## 7. Repository layout
+
+| Path | Contents |
+|---|---|
+| `live/capture.py` | Capture backends: eBPF (bpftrace) and strace, cgroup management (`freeze`, `kill`), gated launch |
+| `live/ebpf/syscalls.bt` | The in-kernel program: system call entry and process exit probes, filtered by cgroup id |
+| `live/model.py` | LSTM next-call model (PyTorch training, numpy inference), window scoring, threshold calibration |
+| `live/monitor.py` | The real-time monitor: per-task windows, alert and kill rule, response, `alerts.jsonl` log |
+| `live/train.py`, `live/evaluate.py`, `live/recalibrate.py` | Training, run-level evaluation, adding thresholds to a saved model |
+| `live/syscalls.py`, `live/syscall_tables.json` | x86_64 ↔ i386 system call mapping (for the ADFA-LD model) |
+| `live/demo/` | Demo service and attacks, attacker listener, dataset recording, eBPF experiment, guided demo |
+| `live/bench/` | Overhead benchmark (`overhead.py`, `storm.c`) |
+| `live/tests/test_live.py` | Offline tests: parsers, syscall mapping, alert statistic |
+| `live/results/` | Live results: `live_eval.csv`, `overhead.csv`, `ebpf_experiment.log` |
+| `phases/`, `phase6b_improve.py`, `phase6c_rules.py`, `run_phase.py` | Offline ML study (8 phases) |
+| `results/` | Offline study results; `results/final/` has the final tables and plots |
+| `docs/figures/` | Figures used in this README |
+| `Training_Data_Master/`, `Validation_Data_Master/`, `Attack_Data_Master/` | ADFA-LD dataset |
+
+---
+
+## 8. Limitations
 * **The demo service is a toy.** It is small and repetitive (held-out normal runs score 0.17–0.27, attacks 0.30–3.97),
   so the results show that the pipeline works end to end, not accuracy on a busy general-purpose server. Much of the
   signal is "a program this service never runs" (e.g. `find`, `id`).
