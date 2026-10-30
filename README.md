@@ -18,6 +18,9 @@ The project has two parts:
 * In the offline study the **LSTM beat** Isolation Forest, One-Class SVM and an autoencoder on ADFA-LD (AUC 0.854).
 * A model trained on the public ADFA-LD dataset **fails on this host** (AUC 0.378): train on the host you protect.
 
+**Full report:** [docs/HIDS_Final_Report.pdf](docs/HIDS_Final_Report.pdf) (IEEE conference format, 8 pages: design,
+ML study, implementation, results, limitations, references).
+
 **Quick demo:** `bash live/demo/present.sh` runs a normal run and four attacks, step by step (see [Demo](#5-demo)).
 
 ---
@@ -344,6 +347,7 @@ at a 5.4% false alarm rate; on LID-DS Bruteforce_CWE-307, F1 0.812 with threshol
 | `live/results/` | Live results: `live_eval.csv`, `overhead.csv`, `ebpf_experiment.log` |
 | `phases/`, `phase6b_improve.py`, `phase6c_rules.py`, `run_phase.py` | Offline ML study (8 phases) |
 | `results/` | Offline study results; `results/final/` has the final tables and plots |
+| `docs/HIDS_Final_Report.pdf` | Final project report |
 | `docs/figures/` | Figures used in this README |
 | `Training_Data_Master/`, `Validation_Data_Master/`, `Attack_Data_Master/` | ADFA-LD dataset |
 
